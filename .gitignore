@@ -1,0 +1,81 @@
+# =========================
+# Frontend (Next.js)
+# =========================
+/Frontend/.dockerignore
+/Frontend/Dockerfile
+/Frontend/apphosting.yaml
+/Frontend/cloudbuild.yaml
+/Frontend/node_modules
+/Frontend/.pnp
+/Frontend/.pnp.*
+/Frontend/.yarn/*
+!/Frontend/.yarn/patches
+!/Frontend/.yarn/plugins
+!/Frontend/.yarn/releases
+!/Frontend/.yarn/versions
+
+# testing
+/Frontend/coverage
+
+# next.js
+/Frontend/.next/
+/Frontend/out/
+
+/Frontend/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# vercel
+/Frontend/.vercel
+
+# typescript
+/Frontend/*.tsbuildinfo
+/Frontend/next-env.d.ts
+
+# genkit
+/Frontend/.genkit/*
+
+# Frontend env files
+/Frontend/.env*
+# firebase logs
+firebase-debug.log
+firestore-debug.log
+
+
+# =========================
+# Backend (FastAPI / Python)
+# =========================
+/Backend/__pycache__/
+/Backend/venv/
+/Backend/.pytest_cache
+/Backend/.mypy_cache
+/Backend/.env*
+/Backend/*.pyc
+/Backend/*.pyo
+/Backend/*.pyd
+/Backend/.python-version
+/Backend/.coverage
+/Backend/.ruff_cache
+/Backend/.tox
+/Backend/dist/
+Backend/.DS_Store
+
+# =========================
+# COMMON
+# =========================
+.env
+*.log
+*.sqlite3
+*.db
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
