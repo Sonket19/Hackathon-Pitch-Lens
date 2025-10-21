@@ -9,9 +9,11 @@ import logging
 from datetime import datetime
 from typing import Optional
 import io
+import time
 from google.cloud import storage
 
 from models.schemas import DealMetadata, UserInput, MemoResponse, ProcessingStatus, Weightage
+from app.api.risk import router as risk_router
 from utils.gcs_utils import GCSManager
 from utils.ocr_utils import PDFProcessor
 from utils.summarizer import GeminiSummarizer
@@ -51,6 +53,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(risk_router)
 
 # ---------- Initialize services ----------
 gcs_manager = GCSManager()
@@ -185,10 +189,13 @@ async def process_deal(deal_id: str, file_urls: dict):
         await firestore_manager.update_deal(deal_id, {"metadata.status": "processing"})
         extracted_text = {}
         temp_res = {}
+        stage_timings = {}
 
         if 'pitch_deck_url' in file_urls:
             logger.info(f"Processing PDF for deal {deal_id}")
+            pdf_start = time.perf_counter()
             pdf_data = await pdf_processor.process_pdf(file_urls['pitch_deck_url'])
+            stage_timings['pdf_processing_s'] = time.perf_counter() - pdf_start
             # extracted_text['pitch_deck'] = pdf_data
             temp_res = pdf_data;
             extracted_text['pitch_deck'] = {
@@ -207,8 +214,15 @@ async def process_deal(deal_id: str, file_urls: dict):
         deal_data = await firestore_manager.get_deal(deal_id)
         company_name = deal_data['metadata'].get('company_name', "")
 
-        public_data = await data_gatherer.gather_data(temp_res["company_name_response"], temp_res["founder_response"], temp_res["sector_response"])
+        public_start = time.perf_counter()
+        public_data = await data_gatherer.gather_data(
+            temp_res["company_name_response"],
+            temp_res["founder_response"],
+            temp_res["sector_response"]
+        )
+        stage_timings['public_data_s'] = time.perf_counter() - public_start
         # print("Extracted Text", extracted_text)
+        write_start = time.perf_counter()
         await firestore_manager.update_deal(deal_id, {
             "extracted_text": extracted_text,
             "public_data": public_data,
@@ -218,6 +232,14 @@ async def process_deal(deal_id: str, file_urls: dict):
             "metadata.founder_names": temp_res["founder_response"],
             "metadata.sector": temp_res["sector_response"],
         })
+        stage_timings['firestore_write_s'] = time.perf_counter() - write_start
+
+        if stage_timings:
+            logger.info(
+                "Deal %s processing timings (s): %s",
+                deal_id,
+                {k: round(v, 3) for k, v in stage_timings.items()}
+            )
 
         logger.info(f"Deal {deal_id} processed successfully")
 
