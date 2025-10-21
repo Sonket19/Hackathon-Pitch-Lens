@@ -26,13 +26,7 @@ def build_company_display_name(
     if not company:
         return product
 
-    normalized_company = company.lower()
-    normalized_product = product.lower()
-
-    if normalized_product == normalized_company:
+    if company.lower() == product.lower():
         return company
 
-    if normalized_product in normalized_company or normalized_company in normalized_product:
-        return company
-
-    return f"{company} — {product}"
+    return f"{company} (Product: {product})"

@@ -1,4 +1,4 @@
-from fastapi import Body, BackgroundTasks, File, HTTPException, UploadFile
+from fastapi import Body, BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import io
@@ -110,7 +110,7 @@ async def upload_deal(
         await firestore_manager.update_deal(deal_id, updates)
 
         # Start background processing
-        background_tasks.add_task(process_deal, deal_id, file_urls)
+        background_tasks.add_task(process_deal, deal_id, file_urls, deck_hash)
 
         return {
             "deal_id": deal_id,
@@ -183,7 +183,7 @@ async def generate_memo(deal_id: str, weightage: Weightage = Body(...)):
 
 
 # ---------- Background Processing ----------
-async def process_deal(deal_id: str, file_urls: dict):
+async def process_deal(deal_id: str, file_urls: dict, deck_hash: Optional[str] = None):
     """Background task to process deal materials"""
     try:
         print("process_deal called")
@@ -194,7 +194,8 @@ async def process_deal(deal_id: str, file_urls: dict):
         stage_timings: Dict[str, Any] = {}
 
         deal_snapshot = await firestore_manager.get_deal(deal_id) or {}
-        deck_hash = deal_snapshot.get('metadata', {}).get('deck_hash')
+        if not deck_hash:
+            deck_hash = deal_snapshot.get('metadata', {}).get('deck_hash')
         cache_bundle = await firestore_manager.get_cached_deck(deck_hash)
 
         cache_hit = bool(cache_bundle and cache_bundle.get('summary'))
@@ -236,7 +237,10 @@ async def process_deal(deal_id: str, file_urls: dict):
         if not temp_res:
             raise ValueError("Pitch deck summary could not be generated")
 
-        company_for_search = temp_res.get("company_name_response", "") or deal_snapshot.get('metadata', {}).get('company_legal_name', "")
+        company_name = temp_res.get("company_name_response", "")
+        product_name = temp_res.get("product_name_response", "")
+
+        company_for_search = company_name or deal_snapshot.get('metadata', {}).get('company_legal_name', "")
         raw_founders = temp_res.get("founder_response", []) or []
         if isinstance(raw_founders, list):
             founders_for_search = [str(name).strip() for name in raw_founders if str(name).strip()]
@@ -266,10 +270,7 @@ async def process_deal(deal_id: str, file_urls: dict):
                 },
             )
 
-        display_name = build_company_display_name(
-            temp_res.get("company_name_response", ""),
-            temp_res.get("product_name_response", ""),
-        )
+        display_name = build_company_display_name(company_name, product_name)
 
         founders = list(dict.fromkeys(founders_for_search))
 
@@ -281,10 +282,15 @@ async def process_deal(deal_id: str, file_urls: dict):
                 "public_data": public_data,
                 "metadata.status": "processed",
                 "metadata.processed_at": datetime.utcnow(),
-                "metadata.company_name": display_name or temp_res.get("company_name_response", ""),
+                "metadata.company_name": company_name or product_name,
                 "metadata.display_name": display_name,
-                "metadata.company_legal_name": temp_res.get("company_name_response", ""),
-                "metadata.product_name": temp_res.get("product_name_response", ""),
+                "metadata.company_legal_name": company_name,
+                "metadata.product_name": product_name,
+                "metadata.names": {
+                    "company": company_name,
+                    "product": product_name,
+                    "display": display_name,
+                },
                 "metadata.founder_names": founders,
                 "metadata.sector": sector_for_search,
                 "metadata.cached_from_hash": cache_hit,

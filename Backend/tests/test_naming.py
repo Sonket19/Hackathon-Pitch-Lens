@@ -9,7 +9,10 @@ from utils.naming import build_company_display_name
 
 
 def test_build_company_display_name_with_distinct_product():
-    assert build_company_display_name("Acme Corp", "Acme Insight Platform") == "Acme Corp — Acme Insight Platform"
+    assert (
+        build_company_display_name("Acme Corp", "Acme Insight Platform")
+        == "Acme Corp (Product: Acme Insight Platform)"
+    )
 
 
 def test_build_company_display_name_same_names():
@@ -17,7 +20,7 @@ def test_build_company_display_name_same_names():
 
 
 def test_build_company_display_name_product_subset():
-    assert build_company_display_name("Acme Analytics", "Acme") == "Acme Analytics"
+    assert build_company_display_name("Acme Analytics", "Acme") == "Acme Analytics (Product: Acme)"
 
 
 def test_build_company_display_name_missing_company():
