@@ -9,6 +9,11 @@ class DealMetadata(BaseModel):
     created_at: datetime
     processed_at: Optional[datetime] = None
     error: Optional[str] = None
+    company_name: Optional[str] = None
+    company_legal_name: Optional[str] = None
+    product_name: Optional[str] = None
+    display_name: Optional[str] = None
+    deck_hash: Optional[str] = None
 
 class UserInput(BaseModel):
     qna: Optional[Dict[str, str]] = {}

@@ -9,6 +9,7 @@ class FirestoreManager:
     def __init__(self):
         self.db = firestore.Client()
         self.collection_name = "deals"
+        self.cache_collection_name = "deck_cache"
 
     async def create_deal(self, deal_id: str, data: Dict[str, Any]) -> bool:
         """Create new deal document"""
@@ -88,6 +89,37 @@ class FirestoreManager:
         except Exception as e:
             logger.error(f"Firestore list error: {str(e)}")
             return []
+
+    async def get_cached_deck(self, deck_hash: Optional[str]) -> Optional[Dict[str, Any]]:
+        if not deck_hash:
+            return None
+
+        try:
+            doc_ref = self.db.collection(self.cache_collection_name).document(deck_hash)
+            doc = doc_ref.get()
+            if doc.exists:
+                return doc.to_dict()
+        except Exception as e:
+            logger.error(f"Firestore cache fetch error: {str(e)}")
+        return None
+
+    async def set_cached_deck(self, deck_hash: Optional[str], payload: Dict[str, Any]) -> None:
+        if not deck_hash:
+            return
+
+        try:
+            doc_ref = self.db.collection(self.cache_collection_name).document(deck_hash)
+            doc_ref.set(
+                {
+                    **payload,
+                    "deck_hash": deck_hash,
+                    "updated_at": firestore.SERVER_TIMESTAMP,
+                },
+                merge=True,
+            )
+            logger.info("Cached deck summary for hash %s", deck_hash)
+        except Exception as e:
+            logger.error(f"Firestore cache set error: {str(e)}")
 
     # async def get_all_deals(self):
     #     deals_ref = self.db.collection(self.collection_name)
