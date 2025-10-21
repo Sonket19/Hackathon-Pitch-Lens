@@ -12,6 +12,7 @@ import io
 from google.cloud import storage
 
 from models.schemas import DealMetadata, UserInput, MemoResponse, ProcessingStatus, Weightage
+from app.api.risk import router as risk_router
 from utils.gcs_utils import GCSManager
 from utils.ocr_utils import PDFProcessor
 from utils.summarizer import GeminiSummarizer
@@ -51,6 +52,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(risk_router)
 
 # ---------- Initialize services ----------
 gcs_manager = GCSManager()
