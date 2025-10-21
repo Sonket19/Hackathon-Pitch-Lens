@@ -15,6 +15,7 @@ from google.cloud import storage
 from app.api.risk import router as risk_router
 from config.settings import settings
 from models.schemas import DealMetadata, MemoResponse, ProcessingStatus, Weightage
+from utils.cache_utils import build_weight_signature
 from utils.docx_utils import MemoExporter
 from utils.firestore_utils import FirestoreManager
 from utils.gcs_utils import GCSManager
@@ -150,31 +151,46 @@ async def generate_memo(deal_id: str, weightage: Weightage = Body(...)):
 
         if deal_data.get('metadata', {}).get('status') != 'processed':
             raise HTTPException(status_code=400, detail="Deal processing not complete")
-        
-        await firestore_manager.update_deal(deal_id, {
-            "metadata.weightage": weightage.dict()
-        })
-        
-        # Generate memo using Gemini
-        memo_text = await gemini_summarizer.generate_memo(deal_data, weightage.dict())
 
-        # Export to DOCX
+        metadata = deal_data.get('metadata', {})
+        deck_hash = metadata.get('deck_hash')
+        weight_dict = weightage.dict()
+        await firestore_manager.update_deal(deal_id, {
+            "metadata.weightage": weight_dict
+        })
+
+        weight_signature = build_weight_signature(weight_dict)
+        cached_memo_entry = await firestore_manager.get_cached_memo(deck_hash, weight_signature)
+
+        memo_text = None
+        if cached_memo_entry:
+            memo_text = cached_memo_entry.get("memo_json") or cached_memo_entry.get("memo_text")
+
+        if memo_text is None:
+            memo_text = await gemini_summarizer.generate_memo(deal_data, weight_dict)
+            if deck_hash:
+                await firestore_manager.cache_memo(deck_hash, weight_signature, memo_text, weight_dict)
+            from_cache = False
+        else:
+            from_cache = True
+
         docx_url = await memo_exporter.create_memo_docx(deal_id, memo_text)
-        
-        deal_data_to_Send = await firestore_manager.get_deal(deal_id)
-        # Save memo to Firestore
+
         memo_data = {
             "draft_v1": memo_text,
             "docx_url": docx_url,
             "generated_at": datetime.utcnow()
         }
-        await firestore_manager.update_deal(deal_id, {"memo": memo_data})
+        if from_cache:
+            memo_data["cached_from_deck"] = True
+
+        await firestore_manager.update_deal(deal_id, {"memo": memo_data, "metadata.memo_cached_from_hash": from_cache})
 
         return MemoResponse(
             deal_id=deal_id,
             memo_text=memo_text,
             docx_url=docx_url,
-            all_data=deal_data_to_Send
+            all_data=deal_data
         )
 
     except Exception as e:

@@ -41,3 +41,4 @@ class MemoResponse(BaseModel):
     deal_id: str
     memo_text: Dict[str, Any]
     docx_url: str
+    all_data: Optional[Dict[str, Any]] = None
