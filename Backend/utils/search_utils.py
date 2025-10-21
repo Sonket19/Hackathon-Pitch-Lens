@@ -19,6 +19,7 @@ class PublicDataGatherer:
     async def gather_data(self, company_name: str, founder_name: List[str], sector: str) -> Dict:
         """Gather public data about company, founder, and market"""
         try:
+            start_time = time.perf_counter()
 #             data = {}
 
 #             # Founder profile
@@ -55,6 +56,12 @@ class PublicDataGatherer:
                 'market_stats': results[2] if not isinstance(results[2], Exception) else {},
                 'news': results[3] if not isinstance(results[3], Exception) else []
             }
+
+            logger.info(
+                "Public data gathering for %s completed in %.3fs",
+                company_name or founder_name,
+                time.perf_counter() - start_time
+            )
 
             return data
 
