@@ -1,7 +1,7 @@
 
 'use client';
 
-import { useState, useEffect, use } from 'react';
+import { useState, useEffect } from 'react';
 import type { AnalysisData } from '@/lib/types';
 import AnalysisDashboard from '@/components/analysis-dashboard';
 import { Loader2 } from 'lucide-react';
@@ -9,7 +9,7 @@ import Header from '@/components/header';
 import { notFound } from 'next/navigation';
 
 export default function StartupPage({ params }: { params: { startupId: string } }) {
-  const { startupId } = use(params);
+  const { startupId } = params;
   const [analysisData, setAnalysisData] = useState<AnalysisData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
