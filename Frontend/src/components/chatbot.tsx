@@ -1,6 +1,6 @@
-'use client';
+"use client";
 
-import { useState, useEffect, useRef, useMemo, type ReactNode } from 'react';
+import { useState, useEffect, useRef, type ReactNode } from 'react';
 import type { AnalysisData } from '@/lib/types';
 import { interviewStartup, StartupInterviewerInput } from '@/ai/flows/startup-interviewer';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Loader2, Send, User, Bot, Mail } from 'lucide-react';
 import { ScrollArea } from './ui/scroll-area';
+import { ConnectFoundersButton } from './connect-founders-button';
 
 const EMAIL_REGEX = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
 
@@ -44,158 +45,16 @@ type Message = {
   content: string;
 };
 
+const INITIAL_GREETING: Message = {
+  role: 'model',
+  content: 'Hi, How can I help you with the Pitch insights?',
+};
+
 export default function Chatbot({ analysisData }: { analysisData: AnalysisData }) {
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<Message[]>([INITIAL_GREETING]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
-
-  const publicData = useMemo(() => {
-    const raw = analysisData.public_data as unknown;
-    if (!raw) return {} as Record<string, unknown>;
-    if (typeof raw === 'string') {
-      try {
-        const parsed = JSON.parse(raw);
-        return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : {};
-      } catch (error) {
-        console.error('Failed to parse public_data payload for chatbot', error);
-        return {} as Record<string, unknown>;
-      }
-    }
-    if (typeof raw === 'object') {
-      return raw as Record<string, unknown>;
-    }
-    return {} as Record<string, unknown>;
-  }, [analysisData.public_data]);
-
-  const namesMeta = (analysisData.metadata?.names ?? {}) as Partial<{
-    company: string;
-    product: string;
-    display: string;
-  }>;
-
-  const coerce = (value: unknown): string => (typeof value === 'string' ? value.trim() : '');
-
-  const companyName =
-    coerce(namesMeta.company) ||
-    coerce(analysisData.metadata?.company_legal_name) ||
-    coerce(analysisData.metadata?.company_name) ||
-    coerce(analysisData.memo?.draft_v1?.company_overview?.name);
-
-  const sanitizeProductName = (value: string): string | undefined => {
-    const trimmed = value.trim();
-    if (!trimmed) {
-      return undefined;
-    }
-    const normalized = trimmed.replace(/\s+/g, ' ');
-    const wordCount = normalized.split(' ').length;
-    if (normalized.length > 60 || wordCount > 6) {
-      return undefined;
-    }
-    return normalized;
-  };
-
-  const rawProductName =
-    coerce(namesMeta.product) ||
-    coerce((analysisData.metadata as { product_name?: unknown } | undefined)?.product_name) ||
-    '';
-
-  const memoProductCandidate = coerce(analysisData.memo?.draft_v1?.company_overview?.technology);
-
-  const productName =
-    sanitizeProductName(rawProductName) ||
-    (memoProductCandidate ? sanitizeProductName(memoProductCandidate) : undefined);
-
-  const displayName =
-    coerce(namesMeta.display) ||
-    coerce(analysisData.metadata?.display_name) ||
-    companyName ||
-    productName ||
-    'the company';
-
-  const showProduct = Boolean(
-    productName && (!companyName || productName.toLowerCase() !== companyName.toLowerCase())
-  );
-  const combinedName = showProduct ? `${companyName || displayName} (Product: ${productName})` : (companyName || displayName);
-
-  const founderEmails = useMemo(() => {
-    const seen = new Set<string>();
-    const ordered: string[] = [];
-
-    const push = (email: string) => {
-      const trimmed = email.trim();
-      if (!trimmed) {
-        return;
-      }
-      const key = trimmed.toLowerCase();
-      if (seen.has(key)) {
-        return;
-      }
-      seen.add(key);
-      ordered.push(trimmed);
-    };
-
-    const harvest = (value: unknown) => collectEmails(value, push);
-
-    const metadata = analysisData.metadata as {
-      founder_emails?: unknown;
-      contact_email?: unknown;
-      founder_contacts?: unknown;
-    } | undefined;
-
-    if (metadata) {
-      harvest(metadata.founder_emails);
-      harvest(metadata.contact_email);
-      harvest(metadata.founder_contacts);
-    }
-
-    harvest(analysisData.memo?.draft_v1?.company_overview?.founders);
-    harvest(analysisData.memo?.draft_v1);
-    harvest(publicData);
-
-    return ordered;
-  }, [analysisData, publicData]);
-
-  const fallbackCompany = companyName || displayName || productName || 'your company';
-  const hasSpecificProduct = Boolean(productName);
-  const mailSubject = hasSpecificProduct
-    ? `Pitch Discussion - ${productName}`
-    : 'Pitch Discussion';
-  const mailBodyLines = hasSpecificProduct
-    ? [
-        'Hi,',
-        '',
-        `I'd love to schedule time to discuss about (${productName}) from your company (${fallbackCompany}).`,
-        'Are you available for a 30-minute call this week to cover product traction, go-to-market, and financial plans?',
-        '',
-        'Looking forward to the conversation.',
-        '',
-        'Best regards,',
-        '[Your Name]',
-      ]
-    : [
-        'Hi,',
-        '',
-        "I'd love to schedule time to discuss further about your Pitch.",
-        'Are you available for a 30-minute call this week to cover product traction, go-to-market, and financial plans?',
-        '',
-        'Looking forward to the conversation.',
-        '',
-        'Best regards,',
-        '[Your Name]',
-      ];
-  const mailBody = mailBodyLines.join('\n');
-
-  const gmailParams = new URLSearchParams({
-    view: 'cm',
-    fs: '1',
-    su: mailSubject,
-    body: mailBody,
-  });
-  if (founderEmails.length > 0) {
-    gmailParams.set('to', founderEmails.join(','));
-  }
-  const gmailLink = `https://mail.google.com/mail/?${gmailParams.toString()}`;
 
   const renderInlineSegments = (text: string, keyPrefix: string): ReactNode[] => {
     return text.split(/(\*\*_.+?_\*\*)/g).map((segment, idx) => {
@@ -262,16 +121,23 @@ export default function Chatbot({ analysisData }: { analysisData: AnalysisData }
         history: [],
       };
       const result = await interviewStartup(initialInput);
-      setMessages([{ role: 'model', content: result.message }]);
+      setMessages(prev => [...prev, { role: 'model', content: result.message }]);
     } catch (e) {
-      setMessages([{ role: 'model', content: 'Sorry, I am having trouble starting the conversation. Please try refreshing.' }]);
+      setMessages(prev => [
+        ...prev,
+        { role: 'model', content: 'Sorry, I am having trouble starting the conversation. Please try refreshing.' },
+      ]);
     } finally {
       setIsLoading(false);
     }
   };
 
   useEffect(() => {
-    getInitialBotMessage();
+    const initialise = async () => {
+      setMessages([INITIAL_GREETING]);
+      await getInitialBotMessage();
+    };
+    void initialise();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [analysisData]);
 
@@ -369,11 +235,7 @@ export default function Chatbot({ analysisData }: { analysisData: AnalysisData }
               </Button>
             </div>
             <div className="flex justify-end">
-              <Button asChild variant="secondary">
-                <a href={gmailLink} target="_blank" rel="noopener noreferrer">
-                  Connect with founders
-                </a>
-              </Button>
+              <ConnectFoundersButton analysisData={analysisData} />
             </div>
           </div>
       </CardContent>
