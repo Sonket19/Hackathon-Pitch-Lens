@@ -22,7 +22,7 @@ class StartupChatAgent:
             temperature=0.35,
             top_p=0.9,
             top_k=64,
-            max_output_tokens=512,
+            max_output_tokens=2048,
         )
 
     async def generate_response(self, analysis: Dict[str, Any], history: List[Dict[str, Any]]) -> str:
@@ -44,8 +44,8 @@ class StartupChatAgent:
             prompt = self._build_chat_prompt(context, cleaned_history, last_user_message)
 
         response = self._model.generate_content(prompt, generation_config=self._config)
-        text = getattr(response, "text", "")
-        cleaned = text.strip() if isinstance(text, str) else ""
+        text = self._extract_text(response)
+        cleaned = text.strip()
         if not cleaned:
             return (
                 "I wasn't able to retrieve an answer from the memo context just yet. "
@@ -57,6 +57,7 @@ class StartupChatAgent:
         return (
             "You are an AI venture analyst assisting investors.\n"
             "Offer a natural welcome that surfaces the most material diligence insights without artificial brevity.\n"
+            "Ensure the greeting feels complete and resolves every idea before finishing.\n"
             "Respond in fluid prose, using paragraphs when appropriate, and ensure critical metrics, financial figures, or traction numbers are wrapped in **_double-emphasis_** markdown.\n"
             "Close by suggesting one diligence avenue the investor could pursue next.\n\n"
             f"Startup dossier:\n{context if context else 'No structured memo available.'}"
@@ -72,6 +73,7 @@ class StartupChatAgent:
             " Treat the user as an investor completing diligence; do not address them as the founder or a member of the startup team."
             " If the dossier lacks the requested data, state that it is unavailable instead of guessing."
             " Deliver a natural, thorough reply that stays focused on the user's request without enforcing a strict length limit."
+            " Provide full context rather than partial lists, and complete your final sentence."
             " Highlight critical metrics or numbers by wrapping them in **_double-emphasis_** markdown."
             " You may end with one succinct follow-up question when helpful.\n\n"
             f"Startup dossier:\n{context if context else 'No structured memo available.'}\n\n"
@@ -137,15 +139,33 @@ class StartupChatAgent:
     def _post_process(self, text: str) -> str:
         """Lightly normalise model output and ensure important numbers are highlighted."""
 
-        lines = [line.rstrip() for line in text.splitlines()]
-        if not lines:
+        stripped = text.strip()
+        if not stripped:
             return text
 
-        collapsed = "\n".join(line for line in lines if line)
-        if not collapsed:
-            collapsed = text.strip()
+        return self._ensure_highlight(stripped)
 
-        return self._ensure_highlight(collapsed)
+    def _extract_text(self, response: Any) -> str:
+        """Extract raw text from a Vertex AI response object."""
+
+        text = getattr(response, "text", "")
+        if isinstance(text, str) and text.strip():
+            return text
+
+        candidates = getattr(response, "candidates", None)
+        if not candidates:
+            return text if isinstance(text, str) else ""
+
+        chunks: List[str] = []
+        for candidate in candidates:
+            content = getattr(candidate, "content", None)
+            parts = getattr(content, "parts", []) if content else []
+            for part in parts:
+                part_text = getattr(part, "text", None)
+                if isinstance(part_text, str):
+                    chunks.append(part_text)
+        joined = "".join(chunks)
+        return joined or (text if isinstance(text, str) else "")
 
     @staticmethod
     def _ensure_highlight(text: str) -> str:
