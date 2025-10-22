@@ -33,6 +33,28 @@ def test_clean_company_title_normalizes_variations():
     assert PublicDataGatherer._clean_company_title("") == ""
 
 
+def test_build_logo_entry_uses_snippet_for_company_name():
+    entry = PublicDataGatherer._build_logo_entry(
+        "B&",
+        [
+            {
+                "title": "B& Logo PNG",
+                "snippet": "Logo of Bain & Company management consulting firm.",
+                "link": "https://example.com/bain",
+            }
+        ],
+    )
+
+    assert entry is not None
+    assert entry["company_name"] == "Bain & Company"
+    assert entry["source"] == "https://example.com/bain"
+
+
+def test_build_logo_entry_skips_unresolved_short_matches():
+    entry = PublicDataGatherer._build_logo_entry("B&", [])
+    assert entry is None
+
+
 def test_resolve_logo_companies_returns_structured_matches(monkeypatch):
     gatherer = PublicDataGatherer(search_service=_DummySearchService(), summarizer=_DummySummarizer())
 

@@ -1,5 +1,5 @@
 from googleapiclient.discovery import build
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 import re
 import logging
 from config.settings import settings
@@ -223,6 +223,8 @@ class PublicDataGatherer:
         for logo in logos:
             results = await self._perform_search(f"{logo} company logo", num_results=3)
             entry = self._build_logo_entry(logo, results)
+            if not entry:
+                continue
             name_key = entry.get("company_name", "").lower()
             if name_key and name_key not in seen_names:
                 seen_names.add(name_key)
@@ -231,22 +233,30 @@ class PublicDataGatherer:
         return resolved
 
     @staticmethod
-    def _build_logo_entry(logo: str, results: Sequence[Dict[str, str]]) -> Dict[str, str]:
+    def _build_logo_entry(
+        logo: str,
+        results: Sequence[Dict[str, str]],
+    ) -> Optional[Dict[str, str]]:
         """Build structured mapping for a logo search result."""
 
         for result in results:
             title = result.get("title", "")
-            cleaned = PublicDataGatherer._clean_company_title(title)
-            if cleaned:
+            snippet = result.get("snippet", "")
+            candidate = PublicDataGatherer._select_company_name(logo, title, snippet)
+            if candidate:
                 return {
                     "logo_text": logo,
-                    "company_name": cleaned,
+                    "company_name": candidate,
                     "source": result.get("link", ""),
                 }
 
+        fallback = PublicDataGatherer._select_company_name(logo, "", "")
+        if not fallback:
+            return None
+
         return {
             "logo_text": logo,
-            "company_name": logo,
+            "company_name": fallback,
             "source": "",
         }
 
@@ -271,6 +281,98 @@ class PublicDataGatherer:
             return cleaned.strip()
 
         return title.strip()
+
+    @staticmethod
+    def _select_company_name(logo: str, title: str, snippet: str) -> str:
+        """Choose the most plausible company name from search artefacts."""
+
+        def _normalise_candidate(raw: str) -> str:
+            return re.sub(r"[\s\-–:]+$", "", raw.strip())
+
+        corp_keywords = (
+            "company",
+            "inc",
+            "inc.",
+            "corporation",
+            "corp",
+            "llc",
+            "ltd",
+            "group",
+            "partners",
+            "holdings",
+            "technologies",
+            "labs",
+            "solutions",
+        )
+
+        banned_single_tokens = {
+            "company",
+            "inc",
+            "inc.",
+            "corporation",
+            "corp",
+            "llc",
+            "ltd",
+            "group",
+            "partners",
+            "holdings",
+            "solutions",
+        }
+
+        def _score_candidate(candidate: str) -> Tuple[int, int]:
+            lowered = candidate.lower()
+            score = 0
+            if any(keyword in lowered for keyword in corp_keywords):
+                score += 3
+            if " " in candidate:
+                score += 2
+            if "&" in candidate:
+                score += 1
+            if lowered == logo.lower():
+                score -= 2
+            return score, len(candidate)
+
+        candidates: List[Tuple[str, Tuple[int, int]]] = []
+
+        title_candidate = PublicDataGatherer._clean_company_title(title)
+        if title_candidate:
+            normalised = _normalise_candidate(title_candidate)
+            lowered_title = normalised.lower()
+            if len(normalised) >= 3 and lowered_title not in {"logo", "official site"}:
+                if "logo" in lowered_title or any(ext in lowered_title for ext in ("png", "svg", "jpg")):
+                    if not any(keyword in lowered_title for keyword in corp_keywords):
+                        normalised = ""
+                if normalised:
+                    candidates.append((normalised, _score_candidate(normalised)))
+
+        if snippet:
+            pattern = re.compile(r"([A-Z][\w']+(?:\s+(?:&\s+)?[A-Z][\w']+){0,4})")
+            for match in pattern.findall(snippet):
+                normalised = _normalise_candidate(match)
+                if len(normalised) < 3:
+                    continue
+                lowered = normalised.lower()
+                if lowered in {"logo", "logos"}:
+                    continue
+                if len(normalised.split()) == 1 and lowered in banned_single_tokens:
+                    continue
+                if not any(keyword in lowered for keyword in corp_keywords) and "&" not in normalised and " " not in normalised:
+                    continue
+                candidates.append((normalised, _score_candidate(normalised)))
+
+        if not candidates:
+            trimmed_logo = _normalise_candidate(logo)
+            if len(trimmed_logo) >= 4:
+                candidates.append((trimmed_logo, _score_candidate(trimmed_logo)))
+
+        if not candidates:
+            return ""
+
+        best = max(candidates, key=lambda item: item[1])
+        # Filter out very short fallbacks (e.g., "B&")
+        if len(best[0]) < 3 or best[0].lower() == logo.lower() and len(best[0]) < 4:
+            return ""
+        return best[0]
 
 #     def _perform_search(self, query: str, num_results: int = 5) -> List[Dict]:
 #         """Perform Google Custom Search"""
