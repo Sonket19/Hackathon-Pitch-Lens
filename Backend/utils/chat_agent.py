@@ -56,8 +56,8 @@ class StartupChatAgent:
     def _build_intro_prompt(self, context: str) -> str:
         return (
             "You are an AI venture analyst assisting investors.\n"
-            "Provide a brief investor-focused greeting that highlights the most material diligence insights.\n"
-            "Prefer bullet points prefixed with '• ' when sharing multiple ideas and aim to stay around 120 words or fewer.\n"
+            "Provide a concise, natural greeting that highlights the most material diligence insights.\n"
+            "Aim to stay around 120 words or fewer, using sentences or short paragraphs instead of bullet lists.\n"
             "Wrap any critical metrics, financial figures, or traction numbers in **_double-emphasis_** markdown.\n"
             "Close with a suggested diligence theme for the investor.\n\n"
             f"Startup dossier:\n{context if context else 'No structured memo available.'}"
@@ -72,7 +72,7 @@ class StartupChatAgent:
             " Answer the user's latest question using only the provided startup dossier."
             " Treat the user as an investor completing diligence; do not address them as the founder or a member of the startup team."
             " If the dossier lacks the requested data, state that it is unavailable instead of guessing."
-            " Keep responses concise (aim for under 120 words) and prefer bullet points prefixed with '• ' when it improves clarity."
+            " Keep responses concise (aim for under 120 words) while sounding natural and conversational rather than list-based."
             " Highlight critical metrics or numbers by wrapping them in **_double-emphasis_** markdown."
             " You may end with one succinct follow-up question when helpful.\n\n"
             f"Startup dossier:\n{context if context else 'No structured memo available.'}\n\n"
@@ -136,41 +136,17 @@ class StartupChatAgent:
         return "\n\n".join(sections)
 
     def _post_process(self, text: str) -> str:
-        """Normalise model output to bullet format with highlights."""
+        """Lightly normalise model output and ensure important numbers are highlighted."""
 
-        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        lines = [line.rstrip() for line in text.splitlines()]
         if not lines:
             return text
 
-        has_bullet = any(line.startswith(("•", "-")) for line in lines)
-        if not has_bullet:
-            sentences: List[str] = []
-            buffer = " ".join(lines)
-            for chunk in buffer.split(". "):
-                stripped = chunk.strip()
-                if not stripped:
-                    continue
-                sentences.append(stripped.rstrip(".?!"))
-            if not sentences:
-                sentences = lines
-            lines = [f"• {sentence}" for sentence in sentences]
-        else:
-            normalised: List[str] = []
-            for line in lines:
-                if line.startswith("•"):
-                    payload = line[1:].strip()
-                elif line.startswith("-"):
-                    payload = line[1:].strip()
-                else:
-                    payload = line.lstrip('-• ').strip()
-                if not payload:
-                    continue
-                normalised.append(f"• {payload}")
-            if normalised:
-                lines = normalised
+        collapsed = "\n".join(line for line in lines if line)
+        if not collapsed:
+            collapsed = text.strip()
 
-        highlighted = self._ensure_highlight("\n".join(lines))
-        return highlighted
+        return self._ensure_highlight(collapsed)
 
     @staticmethod
     def _ensure_highlight(text: str) -> str:
