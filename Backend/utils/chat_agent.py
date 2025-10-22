@@ -19,10 +19,10 @@ class StartupChatAgent:
         vertexai.init(project=settings.GCP_PROJECT_ID, location=settings.GCP_LOCATION)
         self._model = model or GenerativeModel("gemini-2.5-pro")
         self._config = GenerationConfig(
-            temperature=0.25,
-            top_p=0.8,
-            top_k=32,
-            max_output_tokens=256,
+            temperature=0.35,
+            top_p=0.9,
+            top_k=64,
+            max_output_tokens=512,
         )
 
     async def generate_response(self, analysis: Dict[str, Any], history: List[Dict[str, Any]]) -> str:
@@ -56,10 +56,9 @@ class StartupChatAgent:
     def _build_intro_prompt(self, context: str) -> str:
         return (
             "You are an AI venture analyst assisting investors.\n"
-            "Provide a concise, natural greeting that highlights the most material diligence insights.\n"
-            "Aim to stay around 120 words or fewer, using sentences or short paragraphs instead of bullet lists.\n"
-            "Wrap any critical metrics, financial figures, or traction numbers in **_double-emphasis_** markdown.\n"
-            "Close with a suggested diligence theme for the investor.\n\n"
+            "Offer a natural welcome that surfaces the most material diligence insights without artificial brevity.\n"
+            "Respond in fluid prose, using paragraphs when appropriate, and ensure critical metrics, financial figures, or traction numbers are wrapped in **_double-emphasis_** markdown.\n"
+            "Close by suggesting one diligence avenue the investor could pursue next.\n\n"
             f"Startup dossier:\n{context if context else 'No structured memo available.'}"
         )
 
@@ -72,7 +71,7 @@ class StartupChatAgent:
             " Answer the user's latest question using only the provided startup dossier."
             " Treat the user as an investor completing diligence; do not address them as the founder or a member of the startup team."
             " If the dossier lacks the requested data, state that it is unavailable instead of guessing."
-            " Keep responses concise (aim for under 120 words) while sounding natural and conversational rather than list-based."
+            " Deliver a natural, thorough reply that stays focused on the user's request without enforcing a strict length limit."
             " Highlight critical metrics or numbers by wrapping them in **_double-emphasis_** markdown."
             " You may end with one succinct follow-up question when helpful.\n\n"
             f"Startup dossier:\n{context if context else 'No structured memo available.'}\n\n"
