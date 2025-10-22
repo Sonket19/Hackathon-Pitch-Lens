@@ -293,15 +293,8 @@ export default function Chatbot({ analysisData }: { analysisData: AnalysisData }
                 <Send className="w-4 h-4" />
               </Button>
             </div>
-            <div className="rounded-lg border bg-muted/40 p-3 flex flex-col gap-2 text-sm text-muted-foreground">
-              <div className="flex items-center gap-2 font-medium text-foreground">
-                <Mail className="w-4 h-4 text-primary" />
-                Connect with the founders
-              </div>
-              <p>
-                Ready to speak directly with the team? Jump into Gmail with a pre-populated diligence email about {combinedName}.
-              </p>
-              <Button asChild variant="secondary" className="self-start">
+            <div className="flex justify-end">
+              <Button asChild variant="secondary">
                 <a href={gmailLink} target="_blank" rel="noopener noreferrer">
                   Connect with founders
                 </a>
