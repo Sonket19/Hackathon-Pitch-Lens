@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     # APIs
     GOOGLE_API_KEY: str
     GOOGLE_SEARCH_ENGINE_ID: str
+    VECTOR_SEARCH_INDEX: str = os.environ.get("VECTOR_SEARCH_INDEX", "")
+    VECTOR_SEARCH_INDEX_ENDPOINT: str = os.environ.get("VECTOR_SEARCH_INDEX_ENDPOINT", "")
+    VECTOR_SEARCH_DEPLOYED_INDEX_ID: str = os.environ.get("VECTOR_SEARCH_DEPLOYED_INDEX_ID", "")
 
     # Application
     APP_NAME: str = "AI Investment Memo Generator"

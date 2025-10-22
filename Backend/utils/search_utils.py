@@ -1,22 +1,66 @@
-from googleapiclient.discovery import build
 from typing import Any, Dict, List, Optional, Sequence, Tuple
-import re
-import logging
-from config.settings import settings
-from utils.summarizer import GeminiSummarizer
-from utils.email_utils import extract_emails
 import asyncio
+import logging
+import re
 import time
-import random
-from googleapiclient.errors import HttpError
-from concurrent.futures import TimeoutError as FuturesTimeoutError
+
+from utils.email_utils import extract_emails
+from utils.summarizer import GeminiSummarizer
+from utils.vector_db import query_index
 
 logger = logging.getLogger(__name__)
 
+
+def query_vector_search(query: str, source: str = "general", *, k: int = 5) -> List[Dict[str, Any]]:
+    """Query the Vertex AI vector index and normalise the response."""
+
+    if not query:
+        return []
+
+    try:
+        results = query_index(query=query, source=source, k=k)
+    except Exception as exc:  # pragma: no cover - network/service failures
+        logger.error("Vector search error for %s: %s", query, exc)
+        return []
+
+    normalised: List[Dict[str, Any]] = []
+    for item in results:
+        metadata = item.get("metadata") if isinstance(item, dict) else {}
+        if metadata is None:
+            metadata = {}
+
+        title = (
+            metadata.get("title")
+            or metadata.get("heading")
+            or item.get("title")
+            or metadata.get("source_title")
+            or ""
+        )
+        snippet = (
+            metadata.get("snippet")
+            or metadata.get("summary")
+            or item.get("snippet")
+            or item.get("text")
+            or ""
+        )
+        link = metadata.get("url") or metadata.get("link") or metadata.get("source_url") or item.get("link") or ""
+        normalised.append(
+            {
+                "title": str(title),
+                "snippet": str(snippet),
+                "link": str(link),
+                "score": item.get("score"),
+                "metadata": metadata,
+            }
+        )
+
+    return normalised
+
+
 class PublicDataGatherer:
-    def __init__(self, search_service=None, summarizer: Optional[GeminiSummarizer] = None):
-        self.search_service = search_service or build("customsearch", "v1", developerKey=settings.GOOGLE_API_KEY)
+    def __init__(self, *, summarizer: Optional[GeminiSummarizer] = None, vector_query=None):
         self.summarizer = summarizer or GeminiSummarizer()
+        self._vector_query = vector_query or query_vector_search
 
     async def gather_data(
         self,
@@ -127,7 +171,7 @@ class PublicDataGatherer:
             
             all_results: List[Dict[str, Any]] = []
             for query in queries:
-                results = await self._perform_search(query, num_results=3)
+                results = await self._perform_search(query, num_results=3, source="founder")
                 all_results.extend(results)
 
             logger.debug("Founder search results: %s", all_results)
@@ -169,7 +213,7 @@ class PublicDataGatherer:
         """Search for competitors in the same sector"""
         try:
             query = f"{sector} companies competitors startups"
-            results = await self._perform_search(query, num_results=5)
+            results = await self._perform_search(query, num_results=5, source="competitor")
 
             if not results:
                 return []
@@ -200,7 +244,7 @@ class PublicDataGatherer:
 
             all_results = []
             for query in queries:
-                results = await self._perform_search(query, num_results=3)
+                results = await self._perform_search(query, num_results=3, source="market")
                 all_results.extend(results)
 
             if not all_results:
@@ -241,7 +285,7 @@ class PublicDataGatherer:
 
             news_items = []
             for query in queries:
-                results = await self._perform_search(query, num_results=2)
+                results = await self._perform_search(query, num_results=2, source="news")
                 for result in results:
                     news_items.append(f"{result['title']}: {result['snippet']}")
             logger.debug("News items: %s", news_items)
@@ -258,7 +302,11 @@ class PublicDataGatherer:
         seen_names = set()
 
         for logo in logos:
-            results = await self._perform_search(f"{logo} company logo", num_results=3)
+            results = await self._perform_search(
+                f"{logo} company logo",
+                num_results=3,
+                source="logos",
+            )
             entry = self._build_logo_entry(logo, results)
             if not entry:
                 continue
@@ -411,202 +459,19 @@ class PublicDataGatherer:
             return ""
         return best[0]
 
-#     def _perform_search(self, query: str, num_results: int = 5) -> List[Dict]:
-#         """Perform Google Custom Search"""
-#         try:
-#             result = self.search_service.cse().list(
-#                 q=query,
-#                 cx=settings.GOOGLE_SEARCH_ENGINE_ID,
-#                 num=num_results
-#             ).execute()
-
-#             items = result.get('items', [])
-#             return [
-#                 {
-#                     'title': item.get('title', ''),
-#                     'snippet': item.get('snippet', ''),
-#                     'link': item.get('link', '')
-#                 }
-#                 for item in items
-#             ]
-
-#         except Exception as e:
-#             logger.error(f"Search API error: {str(e)}")
-#             return []
-
-#     def _perform_search_sync(self, query: str, num_results: int = 5) -> List[Dict]:
-#         try:
-#             result = self.search_service.cse().list(
-#                 q=query,
-#                 cx=settings.GOOGLE_SEARCH_ENGINE_ID,
-#                 num=num_results
-#             ).execute()
-
-#             items = result.get('items', [])
-#             return [
-#                 {
-#                     'title': item.get('title', ''),
-#                     'snippet': item.get('snippet', ''),
-#                     'link': item.get('link', '')
-#                 }
-#                 for item in items
-#             ]
-
-#         except Exception as e:
-#             logger.error(f"Search API error: {str(e)}")
-#             return []
-        
-        
-#     def _perform_search_sync(self, query: str, num_results: int = 5) -> List[Dict]:
-#         for attempt in range(3):
-#             try:
-#                 result = self.search_service.cse().list(
-#                     q=query,
-#                     cx=settings.GOOGLE_SEARCH_ENGINE_ID,
-#                     num=num_results
-#                 ).execute()
-
-#                 items = result.get('items', [])
-#                 return [
-#                     {
-#                         'title': item.get('title', ''),
-#                         'snippet': item.get('snippet', ''),
-#                         'link': item.get('link', '')
-#                     }
-#                     for item in items
-#                 ]
-
-#             except Exception as e:
-#                 logger.error(f"Search API error (attempt {attempt+1}): {str(e)}")
-#                 time.sleep(2)  # wait before retry
-#         return []
-
-    # async def _perform_search(self, query: str, num_results: int = 5) -> List[Dict]:
-    #     loop = asyncio.get_running_loop()
-    #     return await loop.run_in_executor(None, lambda: self._perform_search_sync(query, num_results))
-    
-    def _perform_search_sync(self, query: str, num_results: int = 5) -> List[Dict]:
-        """Perform Google Custom Search with retry + exponential backoff"""
-        max_attempts = 5
-        base_delay = 1  # seconds
-
-        for attempt in range(1, max_attempts + 1):
-            try:
-                result = self.search_service.cse().list(
-                    q=query,
-                    cx=settings.GOOGLE_SEARCH_ENGINE_ID,
-                    num=num_results
-                ).execute()
-
-                items = result.get('items', [])
-                return [
-                    {
-                        'title': item.get('title', ''),
-                        'snippet': item.get('snippet', ''),
-                        'link': item.get('link', '')
-                    }
-                    for item in items
-                ]
-
-            except (HttpError, OSError, ConnectionError) as e:
-                # Log the error with attempt count
-                logger.error(f"Search API error (attempt {attempt}/{max_attempts}): {str(e)}")
-
-                # If last attempt, give up
-                if attempt == max_attempts:
-                    return []
-
-                # Exponential backoff with jitter
-                delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 0.5)
-                time.sleep(delay)
-
-    async def _perform_search(self, query: str, num_results: int = 5, timeout: int = 30) -> List[Dict]:
-        """Async wrapper for _perform_search_sync with timeout"""
-        loop = asyncio.get_running_loop()
-        try:
-            # Run the sync search in executor with timeout
-            future = loop.run_in_executor(None, lambda: self._perform_search_sync(query, num_results))
-            results = await asyncio.wait_for(future, timeout=timeout)
-            return results
-        except FuturesTimeoutError:
-            logger.error(f"Search API timeout for query: {query}")
-            return []
-        except Exception as e:
-            logger.error(f"Async search error for query: {query}, error: {str(e)}")
-            return []
-
-
-# from googleapiclient.discovery import build
-# from googleapiclient.errors import HttpError
-# from typing import Dict, List
-# import logging
-# import asyncio
-# import random
-# import functools
-# from config.settings import settings
-# from utils.summarizer import GeminiSummarizer
-
-# logger = logging.getLogger(__name__)
-
-# class PublicDataGatherer:
-#     def __init__(self):
-#         self.search_service = build("customsearch", "v1", developerKey=settings.GOOGLE_API_KEY)
-#         self.summarizer = GeminiSummarizer()
-#         self.search_semaphore = asyncio.Semaphore(3)  # Limit concurrent searches
-
-#     @functools.lru_cache(maxsize=128)
-#     def _perform_search_sync(self, query: str, num_results: int = 5) -> List[Dict]:
-#         """Sync Google search with retries (used inside async wrapper)"""
-#         max_attempts = 5
-#         base_delay = 1
-#         for attempt in range(1, max_attempts + 1):
-#             try:
-#                 result = self.search_service.cse().list(
-#                     q=query,
-#                     cx=settings.GOOGLE_SEARCH_ENGINE_ID,
-#                     num=num_results
-#                 ).execute()
-#                 items = result.get("items", [])
-#                 return [{"title": i.get("title", ""), "snippet": i.get("snippet", ""), "link": i.get("link", "")} for i in items]
-#             except (HttpError, OSError, ConnectionError) as e:
-#                 logger.error(f"Search API error (attempt {attempt}/{max_attempts}): {str(e)}")
-#                 if attempt == max_attempts:
-#                     return []
-#                 delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 0.5)
-#                 # Can't use asyncio.sleep here, will be handled in async wrapper
-#                 import time
-#                 time.sleep(delay)
-
-#     async def _perform_search(self, query: str, num_results: int = 5, timeout: int = 30) -> List[Dict]:
-#         """Async wrapper for _perform_search_sync with concurrency limit and timeout"""
-#         async with self.search_semaphore:
-#             loop = asyncio.get_running_loop()
-#             try:
-#                 future = loop.run_in_executor(None, lambda: self._perform_search_sync(query, num_results))
-#                 results = await asyncio.wait_for(future, timeout=timeout)
-#                 return results
-#             except asyncio.TimeoutError:
-#                 logger.error(f"Search API timeout for query: {query}")
-#                 return []
-#             except Exception as e:
-#                 logger.error(f"Async search error for query: {query}, error: {str(e)}")
-#                 return []
-
-#     async def gather_data(self, company_name: str, founder_name: List[str], sector: str) -> Dict:
-#         """Gather public data about company, founder, and market"""
-#         try:
-#             tasks = [
-#                 self._search_founder_profile(founder_name),
-#                 self._search_competitors(company_name, sector),
-#                 self._search_market_data(sector),
-#                 self._search_news(company_name, founder_name)
-#             ]
-#             results = await asyncio.gather(*tasks, return_exceptions=True)
-
-#             data = {
-#                 'founder_profile': results[0] if not isinstance(results[0], Exception) else "Error gathering founder info",
-#                 'competitors': results[1] if not isinstance(results[1], Exception) else [],
-#                 'market_stats': results[2] if not isinstance(results[2], Exception) else {},
+    async def _perform_search(
+        self,
+        query: str,
+        *,
+        num_results: int = 5,
+        source: str = "general",
+    ) -> List[Dict[str, Any]]:
+        return await asyncio.to_thread(
+            self._vector_query,
+            query=query,
+            source=source,
+            k=num_results,
+        )
 #                 'news': results[3] if not isinstance(results[3], Exception) else []
 #             }
 #             return data

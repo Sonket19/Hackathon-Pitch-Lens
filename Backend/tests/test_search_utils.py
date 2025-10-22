@@ -11,17 +11,6 @@ os.environ.setdefault("GOOGLE_SEARCH_ENGINE_ID", "dummy")
 from utils.search_utils import PublicDataGatherer
 
 
-class _DummySearchService:
-    def cse(self):
-        return self
-
-    def list(self, **kwargs):
-        return self
-
-    def execute(self):
-        return {"items": []}
-
-
 class _DummySummarizer:
     def generate_text(self, prompt: str) -> str:
         return ""
@@ -56,9 +45,9 @@ def test_build_logo_entry_skips_unresolved_short_matches():
 
 
 def test_resolve_logo_companies_returns_structured_matches(monkeypatch):
-    gatherer = PublicDataGatherer(search_service=_DummySearchService(), summarizer=_DummySummarizer())
+    gatherer = PublicDataGatherer(summarizer=_DummySummarizer())
 
-    async def fake_search(query: str, num_results: int = 5, timeout: int = 30):
+    async def fake_search(query: str, *, num_results: int = 5, source: str = "general"):
         if "Airbnb" in query:
             return [
                 {
@@ -82,7 +71,7 @@ def test_resolve_logo_companies_returns_structured_matches(monkeypatch):
 
 
 def test_gather_data_includes_logo_matches(monkeypatch):
-    gatherer = PublicDataGatherer(search_service=_DummySearchService(), summarizer=_DummySummarizer())
+    gatherer = PublicDataGatherer(summarizer=_DummySummarizer())
 
     async def fake_founder(names):
         return {
