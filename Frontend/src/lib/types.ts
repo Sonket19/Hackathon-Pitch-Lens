@@ -123,10 +123,19 @@ export type Metadata = {
   sector: string;
   deal_id: string;
   company_name: string;
+  display_name?: string;
+  product_name?: string;
+  company_legal_name?: string;
   founder_names: string[];
   error: string | null;
   status: string;
   processed_at: string;
+  cached_from_hash?: boolean;
+  names?: {
+    company?: string;
+    product?: string;
+    display?: string;
+  };
   weightage: {
     claim_credibility: number;
     financial_health: number;

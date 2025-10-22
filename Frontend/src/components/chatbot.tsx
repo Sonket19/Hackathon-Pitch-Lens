@@ -6,7 +6,7 @@ import { interviewStartup, StartupInterviewerInput } from '@/ai/flows/startup-in
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Loader2, Send, User, Bot } from 'lucide-react';
+import { Loader2, Send, User, Bot, Mail } from 'lucide-react';
 import { ScrollArea } from './ui/scroll-area';
 
 type Message = {
@@ -19,6 +19,33 @@ export default function Chatbot({ analysisData }: { analysisData: AnalysisData }
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
+
+  const founders = Array.isArray(analysisData.metadata?.founder_names)
+    ? analysisData.metadata?.founder_names.filter(name => typeof name === 'string' && name.trim().length > 0)
+    : [];
+  const baseName =
+    (analysisData.metadata?.display_name && analysisData.metadata.display_name.trim()) ||
+    (analysisData.metadata?.company_name && analysisData.metadata.company_name.trim()) ||
+    (analysisData.memo?.draft_v1?.company_overview?.name &&
+      analysisData.memo.draft_v1.company_overview.name.trim()) ||
+    'the company';
+  const rawProduct =
+    (analysisData.metadata as { product_name?: string } | undefined)?.product_name ??
+    analysisData.memo?.draft_v1?.company_overview?.technology;
+  const productName = typeof rawProduct === 'string' ? rawProduct.trim() : '';
+  const showProduct = productName && productName.toLowerCase() !== baseName.toLowerCase();
+  const combinedName = showProduct ? `${baseName} (Product: ${productName})` : baseName;
+  const firstFounder = founders.find(name => name.trim().length > 0);
+  const emailGreeting = firstFounder
+    ? firstFounder.trim().split(/\s+/)[0]
+    : founders.length > 0
+    ? 'team'
+    : 'there';
+  const mailSubject = encodeURIComponent(`Intro call request – ${combinedName}`);
+  const mailBody = encodeURIComponent(
+    `Hi ${emailGreeting},\n\nI'd love to schedule time to discuss ${combinedName} after reviewing your pitch materials in Pitch Lens. Are you available for a 30-minute call this week to cover product traction, go-to-market, and financial plans?\n\nLooking forward to the conversation.\n\nBest regards,\n[Your Name]\n`
+  );
+  const mailtoLink = `mailto:?subject=${mailSubject}&body=${mailBody}`;
 
   const getInitialBotMessage = async () => {
     setIsLoading(true);
@@ -43,11 +70,11 @@ export default function Chatbot({ analysisData }: { analysisData: AnalysisData }
 
   useEffect(() => {
     if (scrollAreaRef.current) {
-        // A hack to scroll to the bottom.
-        const viewport = scrollAreaRef.current.querySelector('div[data-radix-scroll-area-viewport]');
-        if (viewport) {
-            viewport.scrollTop = viewport.scrollHeight;
-        }
+      // A hack to scroll to the bottom.
+      const viewport = scrollAreaRef.current.querySelector('div[data-radix-scroll-area-viewport]');
+      if (viewport) {
+        viewport.scrollTop = viewport.scrollHeight;
+      }
     }
   }, [messages]);
 
@@ -77,7 +104,7 @@ export default function Chatbot({ analysisData }: { analysisData: AnalysisData }
     <Card className="h-[70vh] flex flex-col">
       <CardHeader>
         <CardTitle className="font-headline text-2xl flex items-center gap-3"><Bot className="w-7 h-7 text-primary"/>AI Analyst Chat</CardTitle>
-        <CardDescription>Ask follow-up questions to get a deeper analysis of the startup.</CardDescription>
+        <CardDescription>Ask diligence-focused questions to analyse the startup from an investor perspective.</CardDescription>
       </CardHeader>
       <CardContent className="flex-1 flex flex-col gap-4 overflow-hidden">
         <ScrollArea className="flex-1 pr-4" ref={scrollAreaRef}>
@@ -121,17 +148,31 @@ export default function Chatbot({ analysisData }: { analysisData: AnalysisData }
             )}
           </div>
         </ScrollArea>
-        <div className="flex items-center gap-2 pt-4 border-t">
-          <Input
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && !isLoading && handleSendMessage()}
-            placeholder="Type your answer..."
-            disabled={isLoading}
-          />
-          <Button onClick={handleSendMessage} disabled={isLoading || !input.trim()}>
-            <Send className="w-4 h-4" />
-          </Button>
+        <div className="flex flex-col gap-3 pt-4 border-t">
+          <div className="flex items-center gap-2">
+            <Input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && !isLoading && handleSendMessage()}
+              placeholder="Type your question for the analyst..."
+              disabled={isLoading}
+            />
+            <Button onClick={handleSendMessage} disabled={isLoading || !input.trim()}>
+              <Send className="w-4 h-4" />
+            </Button>
+          </div>
+          <div className="rounded-lg border bg-muted/40 p-3 flex flex-col gap-2 text-sm text-muted-foreground">
+            <div className="flex items-center gap-2 font-medium text-foreground">
+              <Mail className="w-4 h-4 text-primary" />
+              Schedule a call with the founders
+            </div>
+            <p>
+              Ready to speak directly with the team? Kick off an email to request a diligence call about {combinedName}.
+            </p>
+            <Button asChild variant="secondary" className="self-start">
+              <a href={mailtoLink}>Draft email to founders</a>
+            </Button>
+          </div>
         </div>
       </CardContent>
     </Card>
