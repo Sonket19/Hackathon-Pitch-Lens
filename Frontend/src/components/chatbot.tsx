@@ -158,19 +158,31 @@ export default function Chatbot({ analysisData }: { analysisData: AnalysisData }
 
   const mailSubject = `Intro call request – ${combinedName}`;
   const fallbackCompany = companyName || displayName || productName || 'your company';
-  const productLabel = productName || 'your product';
-  const companyLabel = fallbackCompany;
-  const mailBody = [
-    'Hi,',
-    '',
-    `I'd love to schedule time to discuss about (${productLabel}) from your company (${companyLabel}).`,
-    'Are you available for a 30-minute call this week to cover product traction, go-to-market, and financial plans?',
-    '',
-    'Looking forward to the conversation.',
-    '',
-    'Best regards,',
-    '[Your Name]',
-  ].join('\n');
+  const hasSpecificProduct = Boolean(productName);
+  const mailBodyLines = hasSpecificProduct
+    ? [
+        'Hi,',
+        '',
+        `I'd love to schedule time to discuss about ${productName} from your company ${fallbackCompany}.`,
+        'Are you available for a 30-minute call this week to cover product traction, go-to-market, and financial plans?',
+        '',
+        'Looking forward to the conversation.',
+        '',
+        'Best regards,',
+        '[Your Name]',
+      ]
+    : [
+        'Hi,',
+        '',
+        "I'd love to schedule time to discuss further about your pitch.",
+        'Are you available for a 30-minute call this week to cover product traction, go-to-market, and financial plans?',
+        '',
+        'Looking forward to the conversation.',
+        '',
+        'Best regards,',
+        '[Your Name]',
+      ];
+  const mailBody = mailBodyLines.join('\n');
 
   const gmailParams = new URLSearchParams({
     view: 'cm',
