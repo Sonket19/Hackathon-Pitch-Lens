@@ -94,6 +94,15 @@ export default function Chatbot({ analysisData }: { analysisData: AnalysisData }
       });
     }
 
+    const publicContacts = (analysisData.public_data as { founder_contacts?: { emails?: unknown } } | undefined)?.founder_contacts;
+    if (publicContacts && Array.isArray(publicContacts.emails)) {
+      publicContacts.emails.forEach(value => {
+        if (typeof value === 'string' && value.trim().length > 0) {
+          collected.add(value.trim());
+        }
+      });
+    }
+
     return Array.from(collected);
   })();
 
