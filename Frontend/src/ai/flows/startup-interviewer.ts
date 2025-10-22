@@ -189,45 +189,67 @@ function summariseRisk(memo?: SafeMemo): string | undefined {
 
 function buildMissionQuestion(parsed: ParsedAnalysis): string {
   const intro = formatCompanyIntro(parsed);
-  const differentiator = parsed.memo?.business_model?.scalability ?? parsed.memo?.business_model?.revenue_streams;
-  const focus = differentiator ? `I noticed your deck highlights ${differentiator.toLowerCase()}.` : 'I would love to understand your focus a bit more.';
-  return `Hi there! Thanks for sharing ${intro}. Let's talk about your mission. ${focus} What near-term milestone are you targeting over the next two quarters?`;
+  const differentiator =
+    cleanText(parsed.memo?.business_model?.scalability) ??
+    cleanText(parsed.memo?.business_model?.revenue_streams);
+  const focus = differentiator
+    ? `The materials emphasise ${differentiator}.`
+    : 'The materials outline mission and near-term milestones at a high level.';
+  return `Mission & execution for ${intro}: ${focus} I can unpack those mission claims or pivot to another diligence lens—just say the word.`;
 }
 
 function buildMarketQuestion(parsed: ParsedAnalysis): string {
   const market = parsed.memo?.market_analysis?.industry_size_and_growth?.total_addressable_market?.value;
   const commentary = parsed.memo?.market_analysis?.industry_size_and_growth?.commentary;
-  const detail = market ?? commentary;
-  const context = detail ? `You mentioned a market opportunity around ${detail}.` : 'The materials outline a sizeable market opportunity.';
-  return `${context} Staying on the market topic, which customer segment is proving the easiest to win today, and why?`;
+  const intro = formatCompanyIntro(parsed);
+  const detail = cleanText(market) ?? cleanText(commentary);
+  const context = detail
+    ? `Key market signal: ${detail}.`
+    : 'The deck highlights a sizeable market but offers limited quant detail.';
+  return `Market diligence on ${intro}: ${context} Let me know if you want a deeper breakdown or prefer to explore another area.`;
 }
 
 function buildProductQuestion(parsed: ParsedAnalysis): string {
-  const differentiation = parsed.memo?.business_model?.scalability ?? parsed.memo?.business_model?.unit_economics?.customer_lifetime_value_ltv;
-  const hook = differentiation ? `Given your advantage around ${differentiation.toLowerCase()},` : 'Thinking about your product moat,';
-  return `${hook} on the product front, what is the hardest capability for competitors to replicate right now?`;
+  const intro = formatCompanyIntro(parsed);
+  const differentiation =
+    cleanText(parsed.memo?.business_model?.scalability) ??
+    cleanText(parsed.memo?.business_model?.unit_economics?.customer_lifetime_value_ltv);
+  const hook = differentiation
+    ? `The deck leans on differentiation around ${differentiation}.`
+    : 'The moat narrative is still developing.';
+  return `Product moat for ${intro}: ${hook} I can summarise product defensibility signals or we can move to another diligence topic.`;
 }
 
 function buildGtmQuestion(parsed: ParsedAnalysis): string {
   const recentNews = parsed.memo?.market_analysis?.recent_news;
-  const reference = recentNews ? `I saw mention of ${recentNews}.` : 'You referenced a growing pipeline.';
-  return `${reference} From a go-to-market perspective, can you walk me through the most reliable channel for new deals and how you scale it efficiently?`;
+  const intro = formatCompanyIntro(parsed);
+  const reference = cleanText(recentNews)
+    ? `Recent activity notes: ${cleanText(recentNews)}.`
+    : 'Pipeline commentary is included but light on specifics.';
+  return `Go-to-market for ${intro}: ${reference} Happy to dive into channels, conversion, or expansion if that helps your diligence.`;
 }
 
 function buildFinancialQuestion(parsed: ParsedAnalysis): string {
   const burn = parsed.memo?.financials?.burn_and_runway?.implied_net_burn;
   const runway = parsed.memo?.financials?.burn_and_runway?.stated_runway;
-  const tag = [burn, runway].filter(Boolean).join(' and ');
-  const framing = tag ? `With ${tag} in the plan,` : 'Looking at your current plan,';
-  return `${framing} focusing on financial execution, what are the key levers that could extend runway without slowing growth?`;
+  const intro = formatCompanyIntro(parsed);
+  const tag = [cleanText(burn), cleanText(runway)].filter(Boolean).join(' and ');
+  const framing = tag
+    ? `Runway planning calls out ${tag}.`
+    : 'Financial disclosures are directional but not exhaustive.';
+  return `Financial outlook for ${intro}: ${framing} I can walk through revenue traction, burn, or projections—just let me know what matters most.`;
 }
 
 function buildRiskQuestion(parsed: ParsedAnalysis): string {
   const riskScore = parsed.memo?.risk_metrics?.composite_risk_score;
   const interpretation = parsed.memo?.risk_metrics?.score_interpretation;
-  const baseline = typeof riskScore === 'number' ? `Your risk score sits around ${riskScore}.` : 'You shared an overall risk summary.';
-  const followUp = interpretation ? `You described it as "${interpretation}".` : '';
-  return `${baseline} ${followUp} Staying with the risk theme, what keeps you up at night about executing this plan?`;
+  const intro = formatCompanyIntro(parsed);
+  const baseline =
+    typeof riskScore === 'number'
+      ? `Composite risk score comes in around ${riskScore}.`
+      : 'Risk commentary is fairly high level.';
+  const followUp = cleanText(interpretation) ? `Interpretation: "${cleanText(interpretation)}."` : '';
+  return `Risk signals for ${intro}: ${baseline} ${followUp} Call out if you want me to weigh the biggest flags or move to another angle.`;
 }
 
 const QUESTION_BUILDERS: Record<TopicId, (parsed: ParsedAnalysis) => string> = {
@@ -367,14 +389,14 @@ function buildInitialGreeting(parsed: ParsedAnalysis): string {
   const intro = formatCompanyIntro(parsed);
   const founders = summariseFounders(parsed.memo, parsed.metadataFounders);
   const market = summariseMarket(parsed.memo?.market_analysis);
-  const pieces = [`Hi there! I've reviewed ${intro}.`];
+  const pieces = [`Hi there! I've reviewed ${intro} for you.`];
   if (founders) {
     pieces.push(`Team snapshot: ${founders}.`);
   }
   if (market) {
     pieces.push(`Market signals: ${market}.`);
   }
-  pieces.push('What would you like to dig into first?');
+  pieces.push('Let me know which diligence area you want to explore—team, market, product, go-to-market, financials, or risk.');
   return pieces.join(' ');
 }
 

@@ -51,8 +51,8 @@ class StartupChatAgent:
     def _build_intro_prompt(self, context: str) -> str:
         return (
             "You are an AI venture analyst assisting investors.\n"
-            "Use the startup dossier to craft an inviting greeting that summarises the key highlights in two short paragraphs.\n"
-            "End with an open question that encourages the founder to elaborate on a priority topic.\n\n"
+            "Use the startup dossier to craft an inviting greeting that summarises the key highlights for an investor audience in two short paragraphs.\n"
+            "Close by recommending one or two diligence themes the investor could explore next, rather than prompting the founder.\n\n"
             f"Startup dossier:\n{context if context else 'No structured memo available.'}"
         )
 
@@ -63,9 +63,10 @@ class StartupChatAgent:
         return (
             "You are an AI venture analyst assisting investors."
             " Answer the user's latest question using only the provided startup dossier."
+            " Treat the user as an investor completing diligence; do not address them as the founder or a member of the startup team."
             " If the dossier lacks the requested data, state that it is unavailable instead of guessing."
             " Keep responses under 180 words, highlighting concrete numbers where possible."
-            " You may ask a brief follow-up question when it adds analytical value.\n\n"
+            " You may pose a brief follow-up question for the investor when it adds analytical value.\n\n"
             f"Startup dossier:\n{context if context else 'No structured memo available.'}\n\n"
             "Conversation so far (oldest to newest):\n"
             f"{formatted_history if formatted_history else 'No prior dialogue.'}\n\n"
