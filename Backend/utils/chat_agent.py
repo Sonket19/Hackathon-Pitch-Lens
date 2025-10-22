@@ -56,8 +56,8 @@ class StartupChatAgent:
     def _build_intro_prompt(self, context: str) -> str:
         return (
             "You are an AI venture analyst assisting investors.\n"
-            "Produce at most three bullet points prefixed with '• '.\n"
-            "Keep the entire greeting under 120 words and avoid repetition.\n"
+            "Provide a brief investor-focused greeting that highlights the most material diligence insights.\n"
+            "Prefer bullet points prefixed with '• ' when sharing multiple ideas and aim to stay around 120 words or fewer.\n"
             "Wrap any critical metrics, financial figures, or traction numbers in **_double-emphasis_** markdown.\n"
             "Close with a suggested diligence theme for the investor.\n\n"
             f"Startup dossier:\n{context if context else 'No structured memo available.'}"
@@ -72,8 +72,7 @@ class StartupChatAgent:
             " Answer the user's latest question using only the provided startup dossier."
             " Treat the user as an investor completing diligence; do not address them as the founder or a member of the startup team."
             " If the dossier lacks the requested data, state that it is unavailable instead of guessing."
-            " Keep responses under 120 words."
-            " Answer with between two and four bullet points prefixed with '• '."
+            " Keep responses concise (aim for under 120 words) and prefer bullet points prefixed with '• ' when it improves clarity."
             " Highlight critical metrics or numbers by wrapping them in **_double-emphasis_** markdown."
             " You may end with one succinct follow-up question when helpful.\n\n"
             f"Startup dossier:\n{context if context else 'No structured memo available.'}\n\n"
@@ -143,7 +142,7 @@ class StartupChatAgent:
         if not lines:
             return text
 
-        has_bullet = any(line.startswith("•") for line in lines)
+        has_bullet = any(line.startswith(("•", "-")) for line in lines)
         if not has_bullet:
             sentences: List[str] = []
             buffer = " ".join(lines)
@@ -152,19 +151,23 @@ class StartupChatAgent:
                 if not stripped:
                     continue
                 sentences.append(stripped.rstrip(".?!"))
-                if len(sentences) >= 4:
-                    break
             if not sentences:
-                sentences = lines[:4]
-            lines = [f"• {sentence}" for sentence in sentences[:4]]
+                sentences = lines
+            lines = [f"• {sentence}" for sentence in sentences]
         else:
             normalised: List[str] = []
             for line in lines:
                 if line.startswith("•"):
-                    normalised.append(f"• {line[1:].strip()}")
+                    payload = line[1:].strip()
+                elif line.startswith("-"):
+                    payload = line[1:].strip()
                 else:
-                    normalised.append(f"• {line.lstrip('-• ')}")
-            lines = normalised[:4]
+                    payload = line.lstrip('-• ').strip()
+                if not payload:
+                    continue
+                normalised.append(f"• {payload}")
+            if normalised:
+                lines = normalised
 
         highlighted = self._ensure_highlight("\n".join(lines))
         return highlighted

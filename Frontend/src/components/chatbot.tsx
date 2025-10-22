@@ -23,18 +23,37 @@ export default function Chatbot({ analysisData }: { analysisData: AnalysisData }
   const founders = Array.isArray(analysisData.metadata?.founder_names)
     ? analysisData.metadata?.founder_names.filter(name => typeof name === 'string' && name.trim().length > 0)
     : [];
-  const baseName =
-    (analysisData.metadata?.display_name && analysisData.metadata.display_name.trim()) ||
-    (analysisData.metadata?.company_name && analysisData.metadata.company_name.trim()) ||
-    (analysisData.memo?.draft_v1?.company_overview?.name &&
-      analysisData.memo.draft_v1.company_overview.name.trim()) ||
+
+  const namesMeta = (analysisData.metadata?.names ?? {}) as Partial<{
+    company: string;
+    product: string;
+    display: string;
+  }>;
+
+  const coerce = (value: unknown): string => (typeof value === 'string' ? value.trim() : '');
+
+  const companyName =
+    coerce(namesMeta.company) ||
+    coerce(analysisData.metadata?.company_legal_name) ||
+    coerce(analysisData.metadata?.company_name) ||
+    coerce(analysisData.memo?.draft_v1?.company_overview?.name);
+
+  const productName =
+    coerce(namesMeta.product) ||
+    coerce((analysisData.metadata as { product_name?: unknown } | undefined)?.product_name) ||
+    coerce(analysisData.memo?.draft_v1?.company_overview?.technology);
+
+  const displayName =
+    coerce(namesMeta.display) ||
+    coerce(analysisData.metadata?.display_name) ||
+    companyName ||
+    productName ||
     'the company';
-  const rawProduct =
-    (analysisData.metadata as { product_name?: string } | undefined)?.product_name ??
-    analysisData.memo?.draft_v1?.company_overview?.technology;
-  const productName = typeof rawProduct === 'string' ? rawProduct.trim() : '';
-  const showProduct = productName && productName.toLowerCase() !== baseName.toLowerCase();
-  const combinedName = showProduct ? `${baseName} (Product: ${productName})` : baseName;
+
+  const showProduct = Boolean(
+    productName && (!companyName || productName.toLowerCase() !== companyName.toLowerCase())
+  );
+  const combinedName = showProduct ? `${companyName || displayName} (Product: ${productName})` : (companyName || displayName);
   const firstFounder = founders.find(name => name.trim().length > 0);
   const emailGreeting = firstFounder
     ? firstFounder.trim().split(/\s+/)[0]
@@ -79,10 +98,18 @@ export default function Chatbot({ analysisData }: { analysisData: AnalysisData }
   })();
 
   const mailSubject = `Intro call request – ${combinedName}`;
-  const mailBody =
-    `Hi ${emailGreeting},\n\nI'd love to schedule time to discuss ${combinedName} after reviewing your pitch materials in Pitch Lens. ` +
-    "Are you available for a 30-minute call this week to cover product traction, go-to-market, and financial plans?\n\n" +
-    "Looking forward to the conversation.\n\nBest regards,\n[Your Name]\n";
+  const discussionLabel = companyName || displayName || productName || 'your company';
+  const mailBody = [
+    `Hi ${emailGreeting},`,
+    '',
+    `I'd love to schedule time to discuss "${discussionLabel}"${showProduct ? ` (Product: ${productName})` : ''}.`,
+    'Are you available for a 30-minute call this week to cover product traction, go-to-market, and financial plans?',
+    '',
+    'Looking forward to the conversation.',
+    '',
+    'Best regards,',
+    '[Your Name]',
+  ].join('\n');
 
   const gmailParams = new URLSearchParams({
     view: 'cm',

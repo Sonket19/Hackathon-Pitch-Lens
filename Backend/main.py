@@ -7,7 +7,7 @@ import os
 import time
 import uuid
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import uvicorn
 from google.cloud import storage
@@ -31,6 +31,7 @@ from utils.ocr_utils import PDFProcessor
 from utils.search_utils import PublicDataGatherer
 from utils.summarizer import GeminiSummarizer
 from utils.chat_agent import StartupChatAgent
+from utils.email_utils import extract_emails
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -234,8 +235,9 @@ async def process_deal(deal_id: str, file_urls: dict, deck_hash: Optional[str] =
         stage_timings: Dict[str, Any] = {}
 
         deal_snapshot = await firestore_manager.get_deal(deal_id) or {}
+        metadata_snapshot = deal_snapshot.get('metadata', {}) or {}
         if not deck_hash:
-            deck_hash = deal_snapshot.get('metadata', {}).get('deck_hash')
+            deck_hash = metadata_snapshot.get('deck_hash')
         cache_bundle = await firestore_manager.get_cached_deck(deck_hash)
 
         cache_hit = bool(cache_bundle and cache_bundle.get('summary'))
@@ -280,7 +282,7 @@ async def process_deal(deal_id: str, file_urls: dict, deck_hash: Optional[str] =
         company_name = temp_res.get("company_name_response", "")
         product_name = temp_res.get("product_name_response", "")
 
-        company_for_search = company_name or deal_snapshot.get('metadata', {}).get('company_legal_name', "")
+        company_for_search = company_name or metadata_snapshot.get('company_legal_name', "")
         raw_founders = temp_res.get("founder_response", []) or []
         if isinstance(raw_founders, list):
             founders_for_search = [str(name).strip() for name in raw_founders if str(name).strip()]
@@ -314,27 +316,53 @@ async def process_deal(deal_id: str, file_urls: dict, deck_hash: Optional[str] =
 
         founders = list(dict.fromkeys(founders_for_search))
 
+        existing_email_values: List[str] = []
+        snapshot_emails = metadata_snapshot.get('founder_emails')
+        if isinstance(snapshot_emails, list):
+            existing_email_values.extend(str(item) for item in snapshot_emails if isinstance(item, str))
+        snapshot_contact = metadata_snapshot.get('contact_email')
+        if isinstance(snapshot_contact, str) and snapshot_contact.strip():
+            existing_email_values.append(snapshot_contact.strip())
+
+        founder_emails = extract_emails(
+            existing_email_values,
+            extracted_text,
+            public_data,
+            deal_snapshot.get('memo', {}),
+        )
+
+        contact_email = snapshot_contact.strip() if isinstance(snapshot_contact, str) and snapshot_contact.strip() else None
+        if founder_emails and not contact_email:
+            contact_email = founder_emails[0]
+
+        update_payload: Dict[str, Any] = {
+            "extracted_text": extracted_text,
+            "public_data": public_data,
+            "metadata.status": "processed",
+            "metadata.processed_at": datetime.utcnow(),
+            "metadata.company_name": company_name or product_name,
+            "metadata.display_name": display_name,
+            "metadata.company_legal_name": company_name,
+            "metadata.product_name": product_name,
+            "metadata.names": {
+                "company": company_name,
+                "product": product_name,
+                "display": display_name,
+            },
+            "metadata.founder_names": founders,
+            "metadata.sector": sector_for_search,
+            "metadata.cached_from_hash": cache_hit,
+        }
+
+        if founder_emails:
+            update_payload["metadata.founder_emails"] = founder_emails
+        if contact_email:
+            update_payload["metadata.contact_email"] = contact_email
+
         write_start = time.perf_counter()
         await firestore_manager.update_deal(
             deal_id,
-            {
-                "extracted_text": extracted_text,
-                "public_data": public_data,
-                "metadata.status": "processed",
-                "metadata.processed_at": datetime.utcnow(),
-                "metadata.company_name": company_name or product_name,
-                "metadata.display_name": display_name,
-                "metadata.company_legal_name": company_name,
-                "metadata.product_name": product_name,
-                "metadata.names": {
-                    "company": company_name,
-                    "product": product_name,
-                    "display": display_name,
-                },
-                "metadata.founder_names": founders,
-                "metadata.sector": sector_for_search,
-                "metadata.cached_from_hash": cache_hit,
-            },
+            update_payload,
         )
         stage_timings['firestore_write_s'] = time.perf_counter() - write_start
 
