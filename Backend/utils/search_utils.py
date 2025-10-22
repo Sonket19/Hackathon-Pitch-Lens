@@ -1,9 +1,10 @@
 from googleapiclient.discovery import build
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 import re
 import logging
 from config.settings import settings
 from utils.summarizer import GeminiSummarizer
+from utils.email_utils import extract_emails
 import asyncio
 import time
 import random
@@ -62,13 +63,30 @@ class PublicDataGatherer:
 
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            # Map results to keys
-            data = {
-                'founder_profile': results[0] if not isinstance(results[0], Exception) else "Error gathering founder info",
+            founder_payload: Dict[str, Any]
+            founder_summary: str
+            founder_contacts: Dict[str, Any]
+            founder_result = results[0]
+            if isinstance(founder_result, Exception):
+                founder_summary = "Error gathering founder info"
+                founder_contacts = {}
+            elif isinstance(founder_result, dict):
+                founder_summary = str(founder_result.get('summary', '') or '').strip() or "No public information found"
+                contacts_value = founder_result.get('contacts')
+                founder_contacts = contacts_value if isinstance(contacts_value, dict) else {}
+            else:
+                founder_summary = str(founder_result) if founder_result is not None else "No public information found"
+                founder_contacts = {}
+
+            data: Dict[str, Any] = {
+                'founder_profile': founder_summary,
                 'competitors': results[1] if not isinstance(results[1], Exception) else [],
                 'market_stats': results[2] if not isinstance(results[2], Exception) else {},
                 'news': results[3] if not isinstance(results[3], Exception) else []
             }
+
+            if founder_contacts:
+                data['founder_contacts'] = founder_contacts
 
             if logo_inputs:
                 logo_index = 4
@@ -89,8 +107,8 @@ class PublicDataGatherer:
             logger.error(f"Public data gathering error: {str(e)}")
             return {}
         
-    async def _search_founder_profile(self, founder_name: List[str]) -> str:
-        """Search for founder background information"""
+    async def _search_founder_profile(self, founder_name: List[str]) -> Dict[str, Any]:
+        """Search for founder background information and potential contact emails."""
         try:
             founder_combined = ", ".join(founder_name)
             queries = [
@@ -107,26 +125,45 @@ class PublicDataGatherer:
 
 #             queries = [f"{name} {pattern}" for name in founder_name for pattern in patterns]
             
-            all_results = []
+            all_results: List[Dict[str, Any]] = []
             for query in queries:
                 results = await self._perform_search(query, num_results=3)
                 all_results.extend(results)
-                
+
             logger.debug("Founder search results: %s", all_results)
             # Summarize findings
+            emails: List[str] = extract_emails(all_results)
+            email_sources: List[str] = []
+            for result in all_results:
+                link = result.get('link') if isinstance(result, dict) else None
+                if isinstance(link, str) and link.strip():
+                    email_sources.append(link.strip())
+
             if all_results:
                 combined_text = "".join([f"{r['title']}: {r['snippet']}" for r in all_results])
                 summary_text = self.summarizer.generate_text(
                     f"Summarize the professional background of {founder_combined} based on {combined_text}"
                 )
                 logger.debug("Founder background summary: %s", summary_text)
-                return summary_text
+            else:
+                summary_text = "No public information found"
 
-            return "No public information found"
+            return {
+                'summary': summary_text,
+                'contacts': {
+                    'emails': emails,
+                    'sources': email_sources,
+                },
+                'results': all_results,
+            }
 
         except Exception as e:
             logger.error(f"Founder search error: {str(e)}")
-            return "Error gathering founder information"
+            return {
+                'summary': "Error gathering founder information",
+                'contacts': {},
+                'results': [],
+            }
 
     async def _search_competitors(self, company_name: str, sector: str) -> List[str]:
         """Search for competitors in the same sector"""

@@ -85,7 +85,14 @@ def test_gather_data_includes_logo_matches(monkeypatch):
     gatherer = PublicDataGatherer(search_service=_DummySearchService(), summarizer=_DummySummarizer())
 
     async def fake_founder(names):
-        return "Founder background"
+        return {
+            "summary": "Founder background",
+            "contacts": {
+                "emails": ["ceo@example.com"],
+                "sources": ["https://example.com/profile"],
+            },
+            "results": [],
+        }
 
     async def fake_competitors(company, sector):
         return ["Competitor"]
@@ -114,3 +121,5 @@ def test_gather_data_includes_logo_matches(monkeypatch):
     data = asyncio.run(gatherer.gather_data("Company", ["Alice"], "Fintech", logos=["LogoText"]))
 
     assert data["logo_companies"][0]["company_name"] == "ResolvedCo"
+    assert data["founder_profile"] == "Founder background"
+    assert data["founder_contacts"]["emails"] == ["ceo@example.com"]
