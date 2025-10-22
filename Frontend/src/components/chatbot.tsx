@@ -82,10 +82,29 @@ export default function Chatbot({ analysisData }: { analysisData: AnalysisData }
     coerce(analysisData.metadata?.company_name) ||
     coerce(analysisData.memo?.draft_v1?.company_overview?.name);
 
-  const productName =
+  const sanitizeProductName = (value: string): string | undefined => {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return undefined;
+    }
+    const normalized = trimmed.replace(/\s+/g, ' ');
+    const wordCount = normalized.split(' ').length;
+    if (normalized.length > 60 || wordCount > 6) {
+      return undefined;
+    }
+    return normalized;
+  };
+
+  const rawProductName =
     coerce(namesMeta.product) ||
     coerce((analysisData.metadata as { product_name?: unknown } | undefined)?.product_name) ||
-    coerce(analysisData.memo?.draft_v1?.company_overview?.technology);
+    '';
+
+  const memoProductCandidate = coerce(analysisData.memo?.draft_v1?.company_overview?.technology);
+
+  const productName =
+    sanitizeProductName(rawProductName) ||
+    (memoProductCandidate ? sanitizeProductName(memoProductCandidate) : undefined);
 
   const displayName =
     coerce(namesMeta.display) ||
