@@ -1,11 +1,11 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi import Body, BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from fastapi import Body
-import uvicorn
-import os
-import uuid
+from fastapi.responses import StreamingResponse
+import io
 import logging
+import os
+import time
+import uuid
 from datetime import datetime
 from typing import Optional
 import io
@@ -15,16 +15,10 @@ from google.cloud import storage
 from models.schemas import DealMetadata, UserInput, MemoResponse, ProcessingStatus, Weightage
 from app.api.risk import router as risk_router
 from utils.gcs_utils import GCSManager
+from utils.naming import build_company_display_name
 from utils.ocr_utils import PDFProcessor
-from utils.summarizer import GeminiSummarizer
 from utils.search_utils import PublicDataGatherer
-from utils.docx_utils import MemoExporter
-from utils.firestore_utils import FirestoreManager
-from config.settings import settings
-
-from fastapi.responses import StreamingResponse
-import aiofiles
-import tempfile
+from utils.summarizer import GeminiSummarizer
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -90,26 +84,30 @@ async def upload_deal(
         # Create deal metadata
         metadata = DealMetadata(
             deal_id=deal_id,
-            # company_name=company_name,
             status="uploading",
-            created_at=datetime.utcnow()
+            created_at=datetime.utcnow(),
         )
 
         # Save initial metadata to Firestore
         await firestore_manager.create_deal(deal_id, metadata.dict())
 
         # Upload pitch deck to GCS
-        file_urls = {}
+        file_urls: Dict[str, Any] = {}
+        deck_hash: Optional[str] = None
         if pitch_deck:
-            file_urls['pitch_deck_url'] = await gcs_manager.upload_file(
+            pitch_deck_url, deck_hash = await gcs_manager.upload_file(
                 pitch_deck, f"deals/{deal_id}/pitch_deck.pdf"
             )
+            file_urls['pitch_deck_url'] = pitch_deck_url
 
-        # Update Firestore with file URLs
-        await firestore_manager.update_deal(deal_id, {"raw_files": file_urls})
+        # Update Firestore with file URLs and hash metadata if available
+        updates: Dict[str, Any] = {"raw_files": file_urls}
+        if deck_hash:
+            updates["metadata.deck_hash"] = deck_hash
+        await firestore_manager.update_deal(deal_id, updates)
 
         # Start background processing
-        background_tasks.add_task(process_deal, deal_id, file_urls)
+        background_tasks.add_task(process_deal, deal_id, file_urls, deck_hash)
 
         return {
             "deal_id": deal_id,
@@ -149,31 +147,46 @@ async def generate_memo(deal_id: str, weightage: Weightage = Body(...)):
 
         if deal_data.get('metadata', {}).get('status') != 'processed':
             raise HTTPException(status_code=400, detail="Deal processing not complete")
-        
-        await firestore_manager.update_deal(deal_id, {
-            "metadata.weightage": weightage.dict()
-        })
-        
-        # Generate memo using Gemini
-        memo_text = await gemini_summarizer.generate_memo(deal_data, weightage.dict())
 
-        # Export to DOCX
+        metadata = deal_data.get('metadata', {})
+        deck_hash = metadata.get('deck_hash')
+        weight_dict = weightage.dict()
+        await firestore_manager.update_deal(deal_id, {
+            "metadata.weightage": weight_dict
+        })
+
+        weight_signature = build_weight_signature(weight_dict)
+        cached_memo_entry = await firestore_manager.get_cached_memo(deck_hash, weight_signature)
+
+        memo_text = None
+        if cached_memo_entry:
+            memo_text = cached_memo_entry.get("memo_json") or cached_memo_entry.get("memo_text")
+
+        if memo_text is None:
+            memo_text = await gemini_summarizer.generate_memo(deal_data, weight_dict)
+            if deck_hash:
+                await firestore_manager.cache_memo(deck_hash, weight_signature, memo_text, weight_dict)
+            from_cache = False
+        else:
+            from_cache = True
+
         docx_url = await memo_exporter.create_memo_docx(deal_id, memo_text)
-        
-        deal_data_to_Send = await firestore_manager.get_deal(deal_id)
-        # Save memo to Firestore
+
         memo_data = {
             "draft_v1": memo_text,
             "docx_url": docx_url,
             "generated_at": datetime.utcnow()
         }
-        await firestore_manager.update_deal(deal_id, {"memo": memo_data})
+        if from_cache:
+            memo_data["cached_from_deck"] = True
+
+        await firestore_manager.update_deal(deal_id, {"memo": memo_data, "metadata.memo_cached_from_hash": from_cache})
 
         return MemoResponse(
             deal_id=deal_id,
             memo_text=memo_text,
             docx_url=docx_url,
-            all_data=deal_data_to_Send
+            all_data=deal_data
         )
 
     except Exception as e:
@@ -182,7 +195,7 @@ async def generate_memo(deal_id: str, weightage: Weightage = Body(...)):
 
 
 # ---------- Background Processing ----------
-async def process_deal(deal_id: str, file_urls: dict):
+async def process_deal(deal_id: str, file_urls: dict, deck_hash: Optional[str] = None):
     """Background task to process deal materials"""
     try:
         print("process_deal called")
@@ -202,17 +215,6 @@ async def process_deal(deal_id: str, file_urls: dict):
                 "raw":pdf_data["raw"],
                 "concise":pdf_data["concise"],
             }
-            #  {
-            #     "raw": {str(i + 1): t for i, t in enumerate(page_texts)},
-            #     "concise": concise_summary['summary_res'],
-            #     "founder_response": concise_summary['founder_response'],
-            #     "sector_response": concise_summary['sector_response']
-            # }
-
-        # Gather public data
-        logger.info(f"Gathering public data for deal {deal_id}")
-        deal_data = await firestore_manager.get_deal(deal_id)
-        company_name = deal_data['metadata'].get('company_name', "")
 
         public_start = time.perf_counter()
         public_data = await data_gatherer.gather_data(

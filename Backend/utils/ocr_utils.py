@@ -69,10 +69,11 @@ class PDFProcessor:
 
             return {
                 "raw": {str(i + 1): t for i, t in enumerate(page_texts)},
-                "concise": concise_summary['summary_res'],
-                "founder_response": concise_summary['founder_response'],
-                "sector_response": concise_summary['sector_response'],
-                "company_name_response": concise_summary['company_name_response']
+                "concise": concise_summary.get('summary_res', ''),
+                "founder_response": concise_summary.get('founder_response', []),
+                "sector_response": concise_summary.get('sector_response', ''),
+                "company_name_response": concise_summary.get('company_name_response', ''),
+                "product_name_response": concise_summary.get('product_name_response', ''),
             }
 
         except Exception as e:

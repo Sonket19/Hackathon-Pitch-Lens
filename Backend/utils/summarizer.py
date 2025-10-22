@@ -54,19 +54,22 @@ class GeminiSummarizer:
         """Summarize pitch deck into structured sections."""
         try:
             prompt = f"""
-            Analyze the following pitch deck content and extract information for these sections:
-            - problem: What problem is being solved?
-            - solution: What is the proposed solution?
-            - market: Market size, opportunity, and target customers
-            - team: Information about the founding team and key personnel
-            - traction: Current progress, metrics, customers, revenue
-            - financials: Financial projections, funding requirements, revenue model
+            You are processing a startup pitch deck. Read the content below and return a JSON object with the following keys:
+            - "summary": concise overall summary (string)
+            - "founders": array of founder names (strings only)
+            - "sector": specific industry or sector (string)
+            - "company_name": organization or legal company name (string)
+            - "product_name": primary product/solution or brand being pitched (string, may be empty)
 
             Pitch deck content:
             {full_text}
 
-            Return the analysis as a JSON object with the above keys. Be concise but comprehensive.
-            If a section is not clearly addressed in the pitch deck, indicate "Not specified" for that key.
+            Requirements:
+            - The JSON must be valid and parsable with standard libraries.
+            - If only a product or brand name is mentioned, put it in both "company_name" and "product_name".
+            - If both company and product are mentioned, ensure the company/legal entity goes in "company_name" and the flagship product/solution goes in "product_name".
+            - Trim whitespace from values and avoid commentary.
+            - When unsure, leave the value as an empty string "".
             """
 
             summary_text = self._generate_text(prompt)
@@ -77,9 +80,11 @@ class GeminiSummarizer:
             Pitch deck content:
             {full_text}
 
-            Return the analysis as an array.
-            If no data found send empty array.
-            """
+            try:
+                structured_payload: Dict[str, Any] = json.loads(structured_clean) if structured_clean else {}
+            except json.JSONDecodeError:
+                logger.warning("Failed to parse structured summary payload; falling back to legacy prompts")
+                return await self._legacy_summarize_pitch_deck(full_text)
 
             founder_raw = self._generate_text(founder_prompt)
             founder_clean = re.sub(r"^```json\s*|\s*```$", "", founder_raw, flags=re.MULTILINE)
@@ -95,9 +100,10 @@ class GeminiSummarizer:
             Pitch deck content:
             {full_text}
 
-            Return specific sector name only no extra word.
-            If no data found send empty string "".
-            """
+            if not summary_text:
+                summary_text = self._generate_text(
+                    f"Provide a concise summary of the following pitch deck in under 160 words:\n{full_text}"
+                )
 
             sector_response = re.sub(
                 r"^```[a-zA-Z]*\s*|\s*```$",
