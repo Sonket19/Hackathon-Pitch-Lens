@@ -5,6 +5,7 @@ import os
 import json
 import uuid
 import logging
+import time
 
 from google.cloud import vision
 from google.cloud import storage
@@ -39,27 +40,40 @@ class PDFProcessor:
         """
         try:
             print("Process PDF Called")
+            ocr_start = time.perf_counter()
             page_texts = await self._extract_text_from_pdf(gcs_path)
+            ocr_duration = time.perf_counter() - ocr_start
 
             # Join page texts to feed the summarizer
             full_text = "\n\n".join(
                 f"Page {i + 1}: {t}" for i, t in enumerate(page_texts) if t
             )
-            
+
             # print("full_text:",full_text)
+            summary_start = time.perf_counter()
             concise_summary = await self.summarizer.summarize_pitch_deck(full_text)
+            summary_duration = time.perf_counter() - summary_start
             # {"summary_res": response.text,
             #        "founder_response": founder_response,
             #        "sector_response": sector_response}
-            print("concise_summary : ",concise_summary['founder_response'])
-            print("concise_summary : ",concise_summary['sector_response'])
-            
+            print("concise_summary : ", concise_summary.get('founder_response'))
+            print("concise_summary : ", concise_summary.get('sector_response'))
+
+            logger.info(
+                "PDF processing timings (s) for %s: {\"ocr\": %.3f, \"summarizer\": %.3f, \"pages\": %d}",
+                gcs_path,
+                ocr_duration,
+                summary_duration,
+                len(page_texts)
+            )
+
             return {
                 "raw": {str(i + 1): t for i, t in enumerate(page_texts)},
-                "concise": concise_summary['summary_res'],
-                "founder_response": concise_summary['founder_response'],
-                "sector_response": concise_summary['sector_response'],
-                "company_name_response": concise_summary['company_name_response']
+                "concise": concise_summary.get('summary_res', ''),
+                "founder_response": concise_summary.get('founder_response', []),
+                "sector_response": concise_summary.get('sector_response', ''),
+                "company_name_response": concise_summary.get('company_name_response', ''),
+                "product_name_response": concise_summary.get('product_name_response', ''),
             }
 
         except Exception as e:

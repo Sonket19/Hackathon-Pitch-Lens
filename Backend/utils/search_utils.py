@@ -19,6 +19,7 @@ class PublicDataGatherer:
     async def gather_data(self, company_name: str, founder_name: List[str], sector: str) -> Dict:
         """Gather public data about company, founder, and market"""
         try:
+            start_time = time.perf_counter()
 #             data = {}
 
 #             # Founder profile
@@ -37,15 +38,11 @@ class PublicDataGatherer:
         
         
             results = await asyncio.gather(
-                # self._search_founder_profile(founder_name),
-                # self._search_competitors(company_name, sector),
-                # self._search_market_data(sector),
-                # self._search_news(company_name, founder_name),
-                self._run_in_thread(self._search_founder_profile, founder_name),
-                self._run_in_thread(self._search_competitors, company_name, sector),
-                self._run_in_thread(self._search_market_data, sector),
-                self._run_in_thread(self._search_news, company_name, founder_name),
-                return_exceptions=True  # ensures one failure doesn't stop others
+                self._search_founder_profile(founder_name),
+                self._search_competitors(company_name, sector),
+                self._search_market_data(sector),
+                self._search_news(company_name, founder_name),
+                return_exceptions=True,
             )
 
             # Map results to keys
@@ -56,17 +53,18 @@ class PublicDataGatherer:
                 'news': results[3] if not isinstance(results[3], Exception) else []
             }
 
+            logger.info(
+                "Public data gathering for %s completed in %.3fs",
+                company_name or founder_name,
+                time.perf_counter() - start_time
+            )
+
             return data
 
         except Exception as e:
             logger.error(f"Public data gathering error: {str(e)}")
             return {}
         
-    async def _run_in_thread(self, func, *args):
-        """Run blocking function in ThreadPoolExecutor safely"""
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(executor, lambda: func(*args))
-
     async def _search_founder_profile(self, founder_name: List[str]) -> str:
         """Search for founder background information"""
         try:
@@ -90,15 +88,15 @@ class PublicDataGatherer:
                 results = await self._perform_search(query, num_results=3)
                 all_results.extend(results)
                 
-            print("Founder All data: ", all_results)
+            logger.debug("Founder search results: %s", all_results)
             # Summarize findings
             if all_results:
                 combined_text = "".join([f"{r['title']}: {r['snippet']}" for r in all_results])
-                summary = self.summarizer.model.generate_content(
+                summary_text = self.summarizer.generate_text(
                     f"Summarize the professional background of {founder_combined} based on {combined_text}"
                 )
-                print("Founder all_results data sumary: ", summary.text)
-                return summary.text.strip()
+                logger.debug("Founder background summary: %s", summary_text)
+                return summary_text
 
             return "No public information found"
 
@@ -116,15 +114,14 @@ class PublicDataGatherer:
                 return []
 
             # Extract competitor names using Gemini
-            print("Competitor Data : ", results);
+            logger.debug("Competitor search results: %s", results)
             combined_text = "".join([f"{r['title']}: {r['snippet']}" for r in results])
-            response = self.summarizer.model.generate_content(
+            response_text = self.summarizer.generate_text(
                 f"Extract a list of company names that are competitors to {company_name} in the {sector} sector from: {combined_text}. Return only company names, one per line."
             )
-            
-            # competitors = [line.strip() for line in response.text.split('') if line.strip()]
-            competitors = [line.strip() for line in response.text.splitlines() if line.strip()]
-            print("competitors: ", competitors);
+
+            competitors = [line.strip() for line in response_text.splitlines() if line.strip()]
+            logger.debug("Parsed competitors: %s", competitors)
             return competitors[:5]  # Limit to top 5
 
         except Exception as e:
@@ -148,10 +145,10 @@ class PublicDataGatherer:
             if not all_results:
                 return {}
 
-            print("Market Data : ", all_results);
+            logger.debug("Market data search results: %s", all_results)
             # Extract market statistics
             combined_text = "".join([f"{r['title']}: {r['snippet']}" for r in all_results])
-            response = self.summarizer.model.generate_content(
+            response_text = self.summarizer.generate_text(
                 f"""Extract market statistics for the {sector} sector from the following information:
                 {combined_text}
 
@@ -162,10 +159,10 @@ class PublicDataGatherer:
 
             try:
                 import json
-                print("Market Data Summaey: ", response.text);
-                return json.loads(response.text.strip())
+                logger.debug("Market data summary: %s", response_text)
+                return json.loads(response_text.strip())
             except:
-                return {"summary": response.text.strip()}
+                return {"summary": response_text.strip()}
 
         except Exception as e:
             logger.error(f"Market data search error: {str(e)}")
@@ -186,7 +183,7 @@ class PublicDataGatherer:
                 results = await self._perform_search(query, num_results=2)
                 for result in results:
                     news_items.append(f"{result['title']}: {result['snippet']}")
-            print("News Summaey: ", news_items);
+            logger.debug("News items: %s", news_items)
             return news_items[:5]  # Limit to top 5 news items
 
         except Exception as e:
