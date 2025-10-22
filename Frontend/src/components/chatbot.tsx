@@ -6,9 +6,39 @@ import { interviewStartup, StartupInterviewerInput } from '@/ai/flows/startup-in
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Loader2, Send, User, Bot } from 'lucide-react';
+import { Loader2, Send, User, Bot, Mail } from 'lucide-react';
 import { ScrollArea } from './ui/scroll-area';
 import { ConnectFoundersButton } from './connect-founders-button';
+
+const EMAIL_REGEX = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+
+const collectEmails = (value: unknown, push: (email: string) => void): void => {
+  if (!value) {
+    return;
+  }
+
+  if (typeof value === 'string') {
+    const matches = value.match(EMAIL_REGEX);
+    if (matches) {
+      matches.forEach(match => {
+        const trimmed = match.trim();
+        if (trimmed) {
+          push(trimmed);
+        }
+      });
+    }
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    value.forEach(item => collectEmails(item, push));
+    return;
+  }
+
+  if (typeof value === 'object') {
+    Object.values(value as Record<string, unknown>).forEach(item => collectEmails(item, push));
+  }
+};
 
 type Message = {
   role: 'user' | 'model';
