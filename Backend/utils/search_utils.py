@@ -1,5 +1,6 @@
 from googleapiclient.discovery import build
-from typing import Dict, List
+from typing import Dict, List, Optional, Sequence
+import re
 import logging
 from config.settings import settings
 from utils.summarizer import GeminiSummarizer
@@ -12,11 +13,17 @@ from concurrent.futures import TimeoutError as FuturesTimeoutError
 logger = logging.getLogger(__name__)
 
 class PublicDataGatherer:
-    def __init__(self):
-        self.search_service = build("customsearch", "v1", developerKey=settings.GOOGLE_API_KEY)
-        self.summarizer = GeminiSummarizer()
+    def __init__(self, search_service=None, summarizer: Optional[GeminiSummarizer] = None):
+        self.search_service = search_service or build("customsearch", "v1", developerKey=settings.GOOGLE_API_KEY)
+        self.summarizer = summarizer or GeminiSummarizer()
 
-    async def gather_data(self, company_name: str, founder_name: List[str], sector: str) -> Dict:
+    async def gather_data(
+        self,
+        company_name: str,
+        founder_name: List[str],
+        sector: str,
+        logos: Optional[Sequence[str]] = None,
+    ) -> Dict:
         """Gather public data about company, founder, and market"""
         try:
             start_time = time.perf_counter()
@@ -37,13 +44,23 @@ class PublicDataGatherer:
 #             return data
         
         
-            results = await asyncio.gather(
+            logo_inputs = [
+                str(item).strip()
+                for item in (logos or [])
+                if isinstance(item, str) and str(item).strip()
+            ]
+
+            tasks = [
                 self._search_founder_profile(founder_name),
                 self._search_competitors(company_name, sector),
                 self._search_market_data(sector),
                 self._search_news(company_name, founder_name),
-                return_exceptions=True,
-            )
+            ]
+
+            if logo_inputs:
+                tasks.append(self._resolve_logo_companies(logo_inputs))
+
+            results = await asyncio.gather(*tasks, return_exceptions=True)
 
             # Map results to keys
             data = {
@@ -52,6 +69,13 @@ class PublicDataGatherer:
                 'market_stats': results[2] if not isinstance(results[2], Exception) else {},
                 'news': results[3] if not isinstance(results[3], Exception) else []
             }
+
+            if logo_inputs:
+                logo_index = 4
+                if len(results) > logo_index and not isinstance(results[logo_index], Exception):
+                    data['logo_companies'] = results[logo_index]
+                else:
+                    data['logo_companies'] = []
 
             logger.info(
                 "Public data gathering for %s completed in %.3fs",
@@ -189,6 +213,64 @@ class PublicDataGatherer:
         except Exception as e:
             logger.error(f"News search error: {str(e)}")
             return []
+
+    async def _resolve_logo_companies(self, logos: Sequence[str]) -> List[Dict[str, str]]:
+        """Resolve detected logo text to company names via search."""
+
+        resolved: List[Dict[str, str]] = []
+        seen_names = set()
+
+        for logo in logos:
+            results = await self._perform_search(f"{logo} company logo", num_results=3)
+            entry = self._build_logo_entry(logo, results)
+            name_key = entry.get("company_name", "").lower()
+            if name_key and name_key not in seen_names:
+                seen_names.add(name_key)
+                resolved.append(entry)
+
+        return resolved
+
+    @staticmethod
+    def _build_logo_entry(logo: str, results: Sequence[Dict[str, str]]) -> Dict[str, str]:
+        """Build structured mapping for a logo search result."""
+
+        for result in results:
+            title = result.get("title", "")
+            cleaned = PublicDataGatherer._clean_company_title(title)
+            if cleaned:
+                return {
+                    "logo_text": logo,
+                    "company_name": cleaned,
+                    "source": result.get("link", ""),
+                }
+
+        return {
+            "logo_text": logo,
+            "company_name": logo,
+            "source": "",
+        }
+
+    @staticmethod
+    def _clean_company_title(title: str) -> str:
+        """Normalise search result titles into company names."""
+
+        if not title:
+            return ""
+
+        cleaned = title.strip()
+        separators = [" - ", " | ", " · "]
+        for sep in separators:
+            if sep in cleaned:
+                cleaned = cleaned.split(sep)[0]
+
+        cleaned = re.sub(r"(?i)official site", "", cleaned)
+        cleaned = re.sub(r"(?i)home page", "", cleaned)
+        cleaned = re.sub(r"\s{2,}", " ", cleaned)
+
+        if cleaned:
+            return cleaned.strip()
+
+        return title.strip()
 
 #     def _perform_search(self, query: str, num_results: int = 5) -> List[Dict]:
 #         """Perform Google Custom Search"""

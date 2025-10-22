@@ -1,6 +1,6 @@
 # utils/ocr_utils.py
 
-from typing import Dict, List
+from typing import Dict, List, Tuple
 import os
 import json
 import uuid
@@ -41,7 +41,7 @@ class PDFProcessor:
         try:
             print("Process PDF Called")
             ocr_start = time.perf_counter()
-            page_texts = await self._extract_text_from_pdf(gcs_path)
+            page_texts, logo_candidates = await self._extract_text_from_pdf(gcs_path)
             ocr_duration = time.perf_counter() - ocr_start
 
             # Join page texts to feed the summarizer
@@ -74,6 +74,7 @@ class PDFProcessor:
                 "sector_response": concise_summary.get('sector_response', ''),
                 "company_name_response": concise_summary.get('company_name_response', ''),
                 "product_name_response": concise_summary.get('product_name_response', ''),
+                "logos": logo_candidates,
             }
 
         except Exception as e:
@@ -81,15 +82,18 @@ class PDFProcessor:
             # Return a safe structure so callers don't break
             return {"raw": {"1": ""}, "concise": "Error in OCR processing."}
 
-    async def _extract_text_from_pdf(self, gcs_path: str) -> List[str]:
+    async def _extract_text_from_pdf(self, gcs_path: str) -> Tuple[List[str], List[str]]:
         """
         Run Vision's AsyncBatchAnnotateFiles directly on the GCS PDF.
         Parse generated JSON outputs from GCS and return a list of page texts.
         """
         try:
             # ---- 1) Prepare Vision async request ----
-            feature = vision.Feature(
+            text_feature = vision.Feature(
                 type_=vision.Feature.Type.DOCUMENT_TEXT_DETECTION
+            )
+            logo_feature = vision.Feature(
+                type_=vision.Feature.Type.LOGO_DETECTION
             )
 
             gcs_source = vision.GcsSource(uri=gcs_path)
@@ -110,7 +114,7 @@ class PDFProcessor:
             )
 
             async_request = vision.AsyncAnnotateFileRequest(
-                features=[feature],
+                features=[text_feature, logo_feature],
                 input_config=input_config,
                 output_config=output_config,
             )
@@ -124,6 +128,7 @@ class PDFProcessor:
 
             # ---- 3) Read JSON outputs back from GCS ----
             texts: List[str] = []
+            logos_found: set[str] = set()
 
             bucket = self.storage_client.bucket(settings.GCS_BUCKET_NAME)
             # Materialize and sort for deterministic ordering
@@ -166,6 +171,11 @@ class PDFProcessor:
                     if page_text.strip():
                         texts.append(page_text.strip())
 
+                    for logo in resp.get("logoAnnotations", []) or []:
+                        description = str(logo.get("description", "")).strip()
+                        if description:
+                            logos_found.add(description)
+
                 # Optional cleanup (keeps your bucket tidy)
                 try:
                     blob.delete()
@@ -174,9 +184,10 @@ class PDFProcessor:
 
             # If nothing was extracted, keep a single empty string
             #print("text : ",texts)
-            return texts if texts else [""]
+            logo_list = sorted(logos_found)
+            return (texts if texts else [""], logo_list)
 
         except Exception as e:
             logger.error(f"Vision API error: {str(e)}")
             # Return one empty string to keep callers safe
-            return [""]
+            return ([""], [])

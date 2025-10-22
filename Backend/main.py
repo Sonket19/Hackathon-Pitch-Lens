@@ -255,6 +255,8 @@ async def process_deal(deal_id: str, file_urls: dict, deck_hash: Optional[str] =
                 extracted_text = {}
                 public_data = {}
 
+        logos_detected: List[str] = []
+
         if not cache_hit and 'pitch_deck_url' in file_urls:
             logger.info(f"Processing PDF for deal {deal_id}")
             pdf_start = time.perf_counter()
@@ -273,8 +275,15 @@ async def process_deal(deal_id: str, file_urls: dict, deck_hash: Optional[str] =
                 "pitch_deck": {
                     "raw": pdf_data.get("raw", {}),
                     "concise": summary_snapshot["concise"],
+                    "logos": pdf_data.get("logos", []),
                 }
             }
+            logos_detected = pdf_data.get("logos", []) or []
+
+        if not logos_detected:
+            pitch_payload = extracted_text.get("pitch_deck", {}) if isinstance(extracted_text, dict) else {}
+            if isinstance(pitch_payload, dict):
+                logos_detected = pitch_payload.get("logos", []) or []
 
         if not temp_res:
             raise ValueError("Pitch deck summary could not be generated")
@@ -299,6 +308,7 @@ async def process_deal(deal_id: str, file_urls: dict, deck_hash: Optional[str] =
                 company_for_search,
                 founders_for_search,
                 sector_for_search,
+                logos=logos_detected,
             )
             stage_timings['public_data_s'] = time.perf_counter() - public_start
 
@@ -335,6 +345,8 @@ async def process_deal(deal_id: str, file_urls: dict, deck_hash: Optional[str] =
         if founder_emails and not contact_email:
             contact_email = founder_emails[0]
 
+        logo_companies = public_data.get("logo_companies", []) if isinstance(public_data, dict) else []
+
         update_payload: Dict[str, Any] = {
             "extracted_text": extracted_text,
             "public_data": public_data,
@@ -358,6 +370,8 @@ async def process_deal(deal_id: str, file_urls: dict, deck_hash: Optional[str] =
             update_payload["metadata.founder_emails"] = founder_emails
         if contact_email:
             update_payload["metadata.contact_email"] = contact_email
+        if logo_companies:
+            update_payload["metadata.logo_companies"] = logo_companies
 
         write_start = time.perf_counter()
         await firestore_manager.update_deal(
