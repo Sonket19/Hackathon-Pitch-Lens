@@ -18,7 +18,12 @@ class StartupChatAgent:
     def __init__(self, model: Optional[GenerativeModel] = None) -> None:
         vertexai.init(project=settings.GCP_PROJECT_ID, location=settings.GCP_LOCATION)
         self._model = model or GenerativeModel("gemini-2.5-pro")
-        self._config = GenerationConfig(temperature=0.25, top_p=0.9, top_k=32)
+        self._config = GenerationConfig(
+            temperature=0.25,
+            top_p=0.8,
+            top_k=32,
+            max_output_tokens=256,
+        )
 
     async def generate_response(self, analysis: Dict[str, Any], history: List[Dict[str, Any]]) -> str:
         """Generate a response to the latest user message."""
@@ -46,13 +51,15 @@ class StartupChatAgent:
                 "I wasn't able to retrieve an answer from the memo context just yet. "
                 "Please try asking again in a moment or review the memo details manually."
             )
-        return cleaned
+        return self._post_process(cleaned)
 
     def _build_intro_prompt(self, context: str) -> str:
         return (
             "You are an AI venture analyst assisting investors.\n"
-            "Use the startup dossier to craft an inviting greeting that summarises the key highlights for an investor audience in two short paragraphs.\n"
-            "Close by recommending one or two diligence themes the investor could explore next, rather than prompting the founder.\n\n"
+            "Produce at most three bullet points prefixed with '• '.\n"
+            "Keep the entire greeting under 120 words and avoid repetition.\n"
+            "Wrap any critical metrics, financial figures, or traction numbers in **_double-emphasis_** markdown.\n"
+            "Close with a suggested diligence theme for the investor.\n\n"
             f"Startup dossier:\n{context if context else 'No structured memo available.'}"
         )
 
@@ -65,8 +72,10 @@ class StartupChatAgent:
             " Answer the user's latest question using only the provided startup dossier."
             " Treat the user as an investor completing diligence; do not address them as the founder or a member of the startup team."
             " If the dossier lacks the requested data, state that it is unavailable instead of guessing."
-            " Keep responses under 180 words, highlighting concrete numbers where possible."
-            " You may pose a brief follow-up question for the investor when it adds analytical value.\n\n"
+            " Keep responses under 120 words."
+            " Answer with between two and four bullet points prefixed with '• '."
+            " Highlight critical metrics or numbers by wrapping them in **_double-emphasis_** markdown."
+            " You may end with one succinct follow-up question when helpful.\n\n"
             f"Startup dossier:\n{context if context else 'No structured memo available.'}\n\n"
             "Conversation so far (oldest to newest):\n"
             f"{formatted_history if formatted_history else 'No prior dialogue.'}\n\n"
@@ -126,6 +135,55 @@ class StartupChatAgent:
             sections.append("Risk assessment:\n" + self._stringify(risk))
 
         return "\n\n".join(sections)
+
+    def _post_process(self, text: str) -> str:
+        """Normalise model output to bullet format with highlights."""
+
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if not lines:
+            return text
+
+        has_bullet = any(line.startswith("•") for line in lines)
+        if not has_bullet:
+            sentences: List[str] = []
+            buffer = " ".join(lines)
+            for chunk in buffer.split(". "):
+                stripped = chunk.strip()
+                if not stripped:
+                    continue
+                sentences.append(stripped.rstrip(".?!"))
+                if len(sentences) >= 4:
+                    break
+            if not sentences:
+                sentences = lines[:4]
+            lines = [f"• {sentence}" for sentence in sentences[:4]]
+        else:
+            normalised: List[str] = []
+            for line in lines:
+                if line.startswith("•"):
+                    normalised.append(f"• {line[1:].strip()}")
+                else:
+                    normalised.append(f"• {line.lstrip('-• ')}")
+            lines = normalised[:4]
+
+        highlighted = self._ensure_highlight("\n".join(lines))
+        return highlighted
+
+    @staticmethod
+    def _ensure_highlight(text: str) -> str:
+        if "**_" in text:
+            return text
+
+        lines = text.split("\n")
+        for line_index, line in enumerate(lines):
+            tokens = line.split()
+            for token_index, token in enumerate(tokens):
+                cleaned = token.strip(",;:.")
+                if any(ch.isdigit() for ch in cleaned):
+                    tokens[token_index] = token.replace(cleaned, f"**_{cleaned}_**")
+                    lines[line_index] = " ".join(tokens)
+                    return "\n".join(lines)
+        return text
 
     def _extract_memo_sections(self, memo: Optional[Dict[str, Any]]) -> List[str]:
         if not isinstance(memo, dict):

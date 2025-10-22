@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, type ReactNode } from 'react';
 import type { AnalysisData } from '@/lib/types';
 import { interviewStartup, StartupInterviewerInput } from '@/ai/flows/startup-interviewer';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -41,11 +41,116 @@ export default function Chatbot({ analysisData }: { analysisData: AnalysisData }
     : founders.length > 0
     ? 'team'
     : 'there';
-  const mailSubject = encodeURIComponent(`Intro call request – ${combinedName}`);
-  const mailBody = encodeURIComponent(
-    `Hi ${emailGreeting},\n\nI'd love to schedule time to discuss ${combinedName} after reviewing your pitch materials in Pitch Lens. Are you available for a 30-minute call this week to cover product traction, go-to-market, and financial plans?\n\nLooking forward to the conversation.\n\nBest regards,\n[Your Name]\n`
-  );
-  const mailtoLink = `mailto:?subject=${mailSubject}&body=${mailBody}`;
+  const founderEmails = (() => {
+    const collected = new Set<string>();
+    const metadataExtras = analysisData.metadata as { founder_emails?: unknown; contact_email?: unknown };
+    if (metadataExtras) {
+      const direct = metadataExtras?.founder_emails;
+      if (Array.isArray(direct)) {
+        direct.forEach(value => {
+          if (typeof value === 'string' && value.trim().length > 0) {
+            collected.add(value.trim());
+          }
+        });
+      }
+      if (typeof metadataExtras?.contact_email === 'string' && metadataExtras.contact_email.trim().length > 0) {
+        collected.add(metadataExtras.contact_email.trim());
+      }
+    }
+
+    const memoFounders = analysisData.memo?.draft_v1?.company_overview?.founders ?? [];
+    memoFounders.forEach(founder => {
+      const possibleEmail = (founder as { email?: unknown }).email;
+      if (typeof possibleEmail === 'string' && possibleEmail.trim().length > 0) {
+        collected.add(possibleEmail.trim());
+      }
+    });
+
+    const publicFounders = (analysisData.public_data as { founders?: Array<{ email?: string | null }> } | undefined)?.founders;
+    if (Array.isArray(publicFounders)) {
+      publicFounders.forEach(founder => {
+        if (typeof founder?.email === 'string' && founder.email.trim().length > 0) {
+          collected.add(founder.email.trim());
+        }
+      });
+    }
+
+    return Array.from(collected);
+  })();
+
+  const mailSubject = `Intro call request – ${combinedName}`;
+  const mailBody =
+    `Hi ${emailGreeting},\n\nI'd love to schedule time to discuss ${combinedName} after reviewing your pitch materials in Pitch Lens. ` +
+    "Are you available for a 30-minute call this week to cover product traction, go-to-market, and financial plans?\n\n" +
+    "Looking forward to the conversation.\n\nBest regards,\n[Your Name]\n";
+
+  const gmailParams = new URLSearchParams({
+    view: 'cm',
+    fs: '1',
+    su: mailSubject,
+    body: mailBody,
+  });
+  if (founderEmails.length > 0) {
+    gmailParams.set('to', founderEmails.join(','));
+  }
+  const gmailLink = `https://mail.google.com/mail/?${gmailParams.toString()}`;
+
+  const renderInlineSegments = (text: string, keyPrefix: string): ReactNode[] => {
+    return text.split(/(\*\*_.+?_\*\*)/g).map((segment, idx) => {
+      if (!segment) return null;
+      if (segment.startsWith('**_') && segment.endsWith('_**')) {
+        const content = segment.slice(3, -3);
+        return (
+          <span key={`${keyPrefix}-em-${idx}`} className="font-semibold italic text-foreground">
+            {content}
+          </span>
+        );
+      }
+      return <span key={`${keyPrefix}-plain-${idx}`}>{segment}</span>;
+    });
+  };
+
+  const renderMessageContent = (text: string, keyPrefix: string): ReactNode => {
+    const lines = text.split(/\r?\n/).map(line => line.trim()).filter(line => line.length > 0);
+    if (lines.length === 0) {
+      return <p key={`${keyPrefix}-empty`} className="text-sm leading-5">{text}</p>;
+    }
+
+    const nodes: ReactNode[] = [];
+    let listBuffer: string[] = [];
+
+    const flushList = () => {
+      if (listBuffer.length === 0) return;
+      nodes.push(
+        <ul key={`${keyPrefix}-list-${nodes.length}`} className="list-disc space-y-1 pl-5 text-sm leading-5">
+          {listBuffer.map((item, idx) => (
+            <li key={`${keyPrefix}-item-${idx}`}>{renderInlineSegments(item, `${keyPrefix}-item-${idx}`)}</li>
+          ))}
+        </ul>
+      );
+      listBuffer = [];
+    };
+
+    lines.forEach((line, idx) => {
+      if (line.startsWith('•')) {
+        listBuffer.push(line.slice(1).trim());
+        if (idx === lines.length - 1) {
+          flushList();
+        }
+        return;
+      }
+
+      flushList();
+      nodes.push(
+        <p key={`${keyPrefix}-p-${nodes.length}`} className="text-sm leading-5">
+          {renderInlineSegments(line, `${keyPrefix}-p-${idx}`)}
+        </p>
+      );
+    });
+
+    flushList();
+    return <div className="space-y-2">{nodes}</div>;
+  };
 
   const getInitialBotMessage = async () => {
     setIsLoading(true);
@@ -126,7 +231,7 @@ export default function Chatbot({ analysisData }: { analysisData: AnalysisData }
                       : 'bg-muted text-muted-foreground'
                   }`}
                 >
-                  <p className="text-sm">{message.content}</p>
+                  {renderMessageContent(message.content, `message-${index}`)}
                 </div>
                 {message.role === 'user' && (
                     <div className="bg-accent p-2 rounded-full text-accent-foreground">
@@ -148,32 +253,34 @@ export default function Chatbot({ analysisData }: { analysisData: AnalysisData }
             )}
           </div>
         </ScrollArea>
-        <div className="flex flex-col gap-3 pt-4 border-t">
-          <div className="flex items-center gap-2">
-            <Input
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && !isLoading && handleSendMessage()}
-              placeholder="Type your question for the analyst..."
-              disabled={isLoading}
-            />
-            <Button onClick={handleSendMessage} disabled={isLoading || !input.trim()}>
-              <Send className="w-4 h-4" />
-            </Button>
-          </div>
-          <div className="rounded-lg border bg-muted/40 p-3 flex flex-col gap-2 text-sm text-muted-foreground">
-            <div className="flex items-center gap-2 font-medium text-foreground">
-              <Mail className="w-4 h-4 text-primary" />
-              Schedule a call with the founders
+          <div className="flex flex-col gap-3 pt-4 border-t">
+            <div className="flex items-center gap-2">
+              <Input
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && !isLoading && handleSendMessage()}
+                placeholder="Type your question for the analyst..."
+                disabled={isLoading}
+              />
+              <Button onClick={handleSendMessage} disabled={isLoading || !input.trim()}>
+                <Send className="w-4 h-4" />
+              </Button>
             </div>
-            <p>
-              Ready to speak directly with the team? Kick off an email to request a diligence call about {combinedName}.
-            </p>
-            <Button asChild variant="secondary" className="self-start">
-              <a href={mailtoLink}>Draft email to founders</a>
-            </Button>
+            <div className="rounded-lg border bg-muted/40 p-3 flex flex-col gap-2 text-sm text-muted-foreground">
+              <div className="flex items-center gap-2 font-medium text-foreground">
+                <Mail className="w-4 h-4 text-primary" />
+                Connect with the founders
+              </div>
+              <p>
+                Ready to speak directly with the team? Jump into Gmail with a pre-populated diligence email about {combinedName}.
+              </p>
+              <Button asChild variant="secondary" className="self-start">
+                <a href={gmailLink} target="_blank" rel="noopener noreferrer">
+                  Connect with founders
+                </a>
+              </Button>
+            </div>
           </div>
-        </div>
       </CardContent>
     </Card>
   );

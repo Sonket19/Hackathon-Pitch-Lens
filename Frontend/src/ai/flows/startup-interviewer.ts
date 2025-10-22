@@ -38,6 +38,21 @@ type ParsedAnalysis = {
   metadataFounders?: string[];
 };
 
+const emphasise = (value?: string | null): string | undefined => {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  return `**_${trimmed}_**`;
+};
+
+const toBullets = (...lines: Array<string | undefined>): string => {
+  const bulletLines = lines
+    .map(line => line?.trim())
+    .filter((line): line is string => Boolean(line && line.length > 0))
+    .map(line => (line.startsWith('•') ? `• ${line.slice(1).trim()}` : `• ${line}`));
+  return bulletLines.slice(0, 4).join('\n');
+};
+
 function safeParseAnalysis(json: string): ParsedAnalysis {
   try {
     const parsed = JSON.parse(json) as Partial<AnalysisData>;
@@ -113,10 +128,10 @@ function summariseMarket(market?: MarketAnalysis): string | undefined {
   const commentary = cleanText(market.industry_size_and_growth?.commentary);
   const parts = [];
   if (tam) {
-    parts.push(`TAM around ${tam}`);
+    parts.push(`TAM around ${emphasise(tam) ?? tam}`);
   }
   if (cagr) {
-    parts.push(`growth at ${cagr}`);
+    parts.push(`growth at ${emphasise(cagr) ?? cagr}`);
   }
   if (commentary) {
     parts.push(commentary);
@@ -133,13 +148,13 @@ function summariseFinancials(financials?: Financials): string | undefined {
   const valuation = cleanText(financials.valuation_rationale);
   const parts = [];
   if (arr) {
-    parts.push(`Booked ARR: ${arr}`);
+    parts.push(`Booked ARR: ${emphasise(arr) ?? arr}`);
   }
   if (mrr) {
-    parts.push(`Current MRR: ${mrr}`);
+    parts.push(`Current MRR: ${emphasise(mrr) ?? mrr}`);
   }
   if (burn || runway) {
-    parts.push(`Runway plan: ${[burn, runway].filter(Boolean).join(', ')}`);
+    parts.push(`Runway plan: ${emphasise([burn, runway].filter(Boolean).join(', ')) ?? [burn, runway].filter(Boolean).join(', ')}`);
   }
   if (valuation) {
     parts.push(`Valuation rationale: ${valuation}`);
@@ -165,7 +180,8 @@ function summariseBusinessModel(model?: BusinessModel): string | undefined {
     parts.push(`Scalability: ${scalability}`);
   }
   if (ltv || cac) {
-    parts.push(`Unit economics: ${[ltv, cac].filter(Boolean).join(' vs ')}`);
+    const unitEconomics = [ltv, cac].filter(Boolean).join(' vs ');
+    parts.push(`Unit economics: ${emphasise(unitEconomics) ?? unitEconomics}`);
   }
   return parts.join('. ');
 }
@@ -176,7 +192,7 @@ function summariseRisk(memo?: SafeMemo): string | undefined {
   const narrative = cleanText(memo?.risk_metrics?.narrative_justification);
   const parts = [];
   if (typeof score === 'number') {
-    parts.push(`Composite risk score ${score}`);
+    parts.push(`Composite risk score ${emphasise(String(score)) ?? score}`);
   }
   if (interpretation) {
     parts.push(`Interpretation: ${interpretation}`);
@@ -273,7 +289,11 @@ const INTENT_HANDLERS: IntentHandler[] = [
       const foundersSummary = summariseFounders(parsed.memo, parsed.metadataFounders);
       if (!foundersSummary) return undefined;
       const intro = formatCompanyIntro(parsed);
-      return `The leadership for ${intro} includes ${foundersSummary}.`;
+      return toBullets(
+        `Leadership for ${intro}`,
+        `Key operators: ${foundersSummary}.`,
+        'Flag any diligence points you want to explore next.'
+      );
     },
   },
   {
@@ -282,11 +302,11 @@ const INTENT_HANDLERS: IntentHandler[] = [
       const name = formatCompanyIntro(parsed);
       const technology = cleanText(parsed.memo?.company_overview?.technology);
       const businessModel = summariseBusinessModel(parsed.memo?.business_model);
-      const parts = [`${name} positions its product as ${technology ?? 'a focused solution serving its core customers.'}`];
-      if (businessModel) {
-        parts.push(businessModel);
-      }
-      return parts.join(' ');
+      return toBullets(
+        `Product overview for ${name}: ${technology ?? 'focused solution for its core customers.'}`,
+        businessModel ? `Model notes: ${businessModel}.` : undefined,
+        'Need detail on roadmap, integrations, or IP? Happy to dive in.'
+      );
     },
   },
   {
@@ -295,9 +315,17 @@ const INTENT_HANDLERS: IntentHandler[] = [
       const intro = formatCompanyIntro(parsed);
       const market = summariseMarket(parsed.memo?.market_analysis);
       if (!market) {
-        return `${intro} is targeting a growing market, though the deck did not provide additional detail.`;
+        return toBullets(
+          `${intro} is targeting a growing market.`,
+          'The deck offered limited quant detail beyond directional commentary.',
+          'Call out if you want me to surface competitor or customer references.'
+        );
       }
-      return `${intro} is targeting ${market}.`;
+      return toBullets(
+        `${intro} is targeting this market:`,
+        `${market}.`,
+        'Want to scrutinise competitors, pricing power, or buyer persona next?'
+      );
     },
   },
   {
@@ -305,9 +333,16 @@ const INTENT_HANDLERS: IntentHandler[] = [
     handler: parsed => {
       const financials = summariseFinancials(parsed.memo?.financials);
       if (!financials) {
-        return 'The uploaded materials did not include detailed financials. You may need to request them from the team.';
+        return toBullets(
+          'Detailed financial tables were not present in the memo.',
+          'Recommend requesting ARR, burn, and runway directly from the team.'
+        );
       }
-      return financials;
+      return toBullets(
+        'Financial profile highlights:',
+        `${financials}.`,
+        'Should we pressure test assumptions around runway, capital ask, or valuation next?'
+      );
     },
   },
   {
@@ -315,9 +350,16 @@ const INTENT_HANDLERS: IntentHandler[] = [
     handler: parsed => {
       const risk = summariseRisk(parsed.memo);
       if (!risk) {
-        return 'The risk summary was not available in the memo. Please review the raw materials for additional signals.';
+        return toBullets(
+          'Risk summary not captured in the memo.',
+          'Recommend reviewing original deck or requesting diligence responses.'
+        );
       }
-      return risk;
+      return toBullets(
+        'Risk lens from the memo:',
+        `${risk}.`,
+        'Highlight which mitigation area you want to stress-test.'
+      );
     },
   },
   {
@@ -326,9 +368,17 @@ const INTENT_HANDLERS: IntentHandler[] = [
       const business = summariseBusinessModel(parsed.memo?.business_model);
       const intro = formatCompanyIntro(parsed);
       if (business) {
-        return `${intro} is focused on executing this plan: ${business}`;
+        return toBullets(
+          `Mission focus for ${intro}:`,
+          `${business}.`,
+          'Want to align stated milestones with traction to date?'
+        );
       }
-      return `${intro} did not provide detailed mission statements beyond the summary deck.`;
+      return toBullets(
+        `Mission focus for ${intro}:`,
+        'The deck offered only high-level mission language.',
+        'Share which milestone matters and I will surface relevant context.'
+      );
     },
   },
   {
@@ -337,22 +387,14 @@ const INTENT_HANDLERS: IntentHandler[] = [
       const intro = formatCompanyIntro(parsed);
       const founders = summariseFounders(parsed.memo, parsed.metadataFounders);
       const market = summariseMarket(parsed.memo?.market_analysis);
-      const pieces = [`${intro} is highlighted in the memo.`];
-      if (founders) {
-        pieces.push(`Key people: ${founders}.`);
-      }
-      if (market) {
-        pieces.push(`Market context: ${market}.`);
-      }
       const business = summariseBusinessModel(parsed.memo?.business_model);
-      if (business) {
-        pieces.push(business);
-      }
       const financials = summariseFinancials(parsed.memo?.financials);
-      if (financials) {
-        pieces.push(financials);
-      }
-      return pieces.join(' ');
+      return toBullets(
+        `Snapshot: ${intro}.`,
+        founders ? `Team: ${founders}.` : undefined,
+        market ? `Market: ${market}.` : undefined,
+        business ?? financials ?? 'Call out which diligence angle you want first.'
+      );
     },
   },
 ];
@@ -371,33 +413,25 @@ function buildIntentResponse(question: string, parsed: ParsedAnalysis): string {
   const intro = formatCompanyIntro(parsed);
   const business = summariseBusinessModel(parsed.memo?.business_model);
   const market = summariseMarket(parsed.memo?.market_analysis);
-  const defaultParts = [`${intro} is summarised in the memo you uploaded.`];
-  if (business) {
-    defaultParts.push(business);
-  }
-  if (market) {
-    defaultParts.push(`Market context: ${market}.`);
-  }
   const risk = summariseRisk(parsed.memo);
-  if (risk) {
-    defaultParts.push(risk);
-  }
-  return defaultParts.join(' ');
+  return toBullets(
+    `Snapshot: ${intro}.`,
+    business ? `Model: ${business}.` : undefined,
+    market ? `Market: ${market}.` : undefined,
+    risk ?? 'Tell me which diligence lane you want to explore next.'
+  );
 }
 
 function buildInitialGreeting(parsed: ParsedAnalysis): string {
   const intro = formatCompanyIntro(parsed);
   const founders = summariseFounders(parsed.memo, parsed.metadataFounders);
   const market = summariseMarket(parsed.memo?.market_analysis);
-  const pieces = [`Hi there! I've reviewed ${intro} for you.`];
-  if (founders) {
-    pieces.push(`Team snapshot: ${founders}.`);
-  }
-  if (market) {
-    pieces.push(`Market signals: ${market}.`);
-  }
-  pieces.push('Let me know which diligence area you want to explore—team, market, product, go-to-market, financials, or risk.');
-  return pieces.join(' ');
+  return toBullets(
+    `Review complete for ${intro}.`,
+    founders ? `Team: ${founders}.` : undefined,
+    market ? `Market signals: ${market}.` : undefined,
+    'Choose a diligence focus—team, market, product, GTM, financials, or risk.'
+  );
 }
 
 function runDeterministicFallback(parsedInput: StartupInterviewerInput): StartupInterviewerOutput {
