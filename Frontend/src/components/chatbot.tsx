@@ -10,36 +10,6 @@ import { Loader2, Send, User, Bot, Mail } from 'lucide-react';
 import { ScrollArea } from './ui/scroll-area';
 import { ConnectFoundersButton } from './connect-founders-button';
 
-const EMAIL_REGEX = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
-
-const collectEmails = (value: unknown, push: (email: string) => void): void => {
-  if (!value) {
-    return;
-  }
-
-  if (typeof value === 'string') {
-    const matches = value.match(EMAIL_REGEX);
-    if (matches) {
-      matches.forEach(match => {
-        const trimmed = match.trim();
-        if (trimmed) {
-          push(trimmed);
-        }
-      });
-    }
-    return;
-  }
-
-  if (Array.isArray(value)) {
-    value.forEach(item => collectEmails(item, push));
-    return;
-  }
-
-  if (typeof value === 'object') {
-    Object.values(value as Record<string, unknown>).forEach(item => collectEmails(item, push));
-  }
-};
-
 type Message = {
   role: 'user' | 'model';
   content: string;
@@ -53,7 +23,7 @@ const INITIAL_GREETING: Message = {
 export default function Chatbot({ analysisData }: { analysisData: AnalysisData }) {
   const [messages, setMessages] = useState<Message[]>([INITIAL_GREETING]);
   const [input, setInput] = useState('');
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
 
   const renderInlineSegments = (text: string, keyPrefix: string): ReactNode[] => {
@@ -113,29 +83,10 @@ export default function Chatbot({ analysisData }: { analysisData: AnalysisData }
     return <div className="space-y-2">{nodes}</div>;
   };
 
-  const getInitialBotMessage = async () => {
-    setIsLoading(true);
-    try {
-      const initialInput: StartupInterviewerInput = {
-        analysisData: JSON.stringify(analysisData),
-        history: [],
-      };
-      const result = await interviewStartup(initialInput);
-      setMessages(prev => [...prev, { role: 'model', content: result.message }]);
-    } catch (e) {
-      setMessages(prev => [
-        ...prev,
-        { role: 'model', content: 'Sorry, I am having trouble starting the conversation. Please try refreshing.' },
-      ]);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
   useEffect(() => {
     const initialise = async () => {
       setMessages([INITIAL_GREETING]);
-      await getInitialBotMessage();
+      setIsLoading(false);
     };
     void initialise();
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -3,6 +3,7 @@
 import { useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import type { AnalysisData } from '@/lib/types';
+import { cn } from '@/lib/utils';
 
 const EMAIL_REGEX = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
 
@@ -177,7 +178,14 @@ export function ConnectFoundersButton({ analysisData, className }: Props) {
   }, [analysisData]);
 
   return (
-    <Button asChild variant="secondary" className={className}>
+    <Button
+      asChild
+      variant="ghost"
+      className={cn(
+        'bg-emerald-600 text-white hover:bg-emerald-500 focus-visible:ring-emerald-600 border border-emerald-700',
+        className,
+      )}
+    >
       <a href={gmailLink} target="_blank" rel="noopener noreferrer">
         Connect with founders
       </a>
