@@ -139,12 +139,12 @@ export default function Chatbot({ analysisData }: { analysisData: AnalysisData }
 
   const mailSubject = `Intro call request – ${combinedName}`;
   const fallbackCompany = companyName || displayName || productName || 'your company';
-  const productLabel = productName ? `(${productName})` : 'your product';
-  const companyLabel = fallbackCompany === 'your company' ? 'your company' : `(${fallbackCompany})`;
+  const productLabel = productName || 'your product';
+  const companyLabel = fallbackCompany;
   const mailBody = [
     'Hi,',
     '',
-    `I'd love to schedule time to discuss about ${productLabel} from your company ${companyLabel}.`,
+    `I'd love to schedule time to discuss about (${productLabel}) from your company (${companyLabel}).`,
     'Are you available for a 30-minute call this week to cover product traction, go-to-market, and financial plans?',
     '',
     'Looking forward to the conversation.',
