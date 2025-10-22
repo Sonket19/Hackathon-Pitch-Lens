@@ -20,6 +20,24 @@ export default function Chatbot({ analysisData }: { analysisData: AnalysisData }
   const [isLoading, setIsLoading] = useState(true);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
 
+  const publicData = (() => {
+    const raw = analysisData.public_data as unknown;
+    if (!raw) return {} as Record<string, unknown>;
+    if (typeof raw === 'string') {
+      try {
+        const parsed = JSON.parse(raw);
+        return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : {};
+      } catch (error) {
+        console.error('Failed to parse public_data payload for chatbot', error);
+        return {} as Record<string, unknown>;
+      }
+    }
+    if (typeof raw === 'object') {
+      return raw as Record<string, unknown>;
+    }
+    return {} as Record<string, unknown>;
+  })();
+
   const founders = Array.isArray(analysisData.metadata?.founder_names)
     ? analysisData.metadata?.founder_names.filter(name => typeof name === 'string' && name.trim().length > 0)
     : [];
@@ -85,7 +103,7 @@ export default function Chatbot({ analysisData }: { analysisData: AnalysisData }
       }
     });
 
-    const publicFounders = (analysisData.public_data as { founders?: Array<{ email?: string | null }> } | undefined)?.founders;
+    const publicFounders = (publicData as { founders?: Array<{ email?: string | null }> } | undefined)?.founders;
     if (Array.isArray(publicFounders)) {
       publicFounders.forEach(founder => {
         if (typeof founder?.email === 'string' && founder.email.trim().length > 0) {
@@ -94,9 +112,18 @@ export default function Chatbot({ analysisData }: { analysisData: AnalysisData }
       });
     }
 
-    const publicContacts = (analysisData.public_data as { founder_contacts?: { emails?: unknown } } | undefined)?.founder_contacts;
+    const publicContacts = (publicData as { founder_contacts?: { emails?: unknown } } | undefined)?.founder_contacts;
     if (publicContacts && Array.isArray(publicContacts.emails)) {
       publicContacts.emails.forEach(value => {
+        if (typeof value === 'string' && value.trim().length > 0) {
+          collected.add(value.trim());
+        }
+      });
+    }
+
+    const metadataContacts = (analysisData.metadata as { founder_contacts?: { emails?: unknown } } | undefined)?.founder_contacts;
+    if (metadataContacts && Array.isArray(metadataContacts.emails)) {
+      metadataContacts.emails.forEach(value => {
         if (typeof value === 'string' && value.trim().length > 0) {
           collected.add(value.trim());
         }
@@ -108,10 +135,12 @@ export default function Chatbot({ analysisData }: { analysisData: AnalysisData }
 
   const mailSubject = `Intro call request – ${combinedName}`;
   const discussionLabel = companyName || displayName || productName || 'your company';
+  const productLabel = productName ? `"${productName}"` : 'your product';
+  const companyLabel = discussionLabel ? `"${discussionLabel}"` : 'your company';
   const mailBody = [
     `Hi ${emailGreeting},`,
     '',
-    `I'd love to schedule time to discuss "${discussionLabel}"${showProduct ? ` (Product: ${productName})` : ''}.`,
+    `I'd love to schedule time to discuss ${productLabel} from your company ${companyLabel}.`,
     'Are you available for a 30-minute call this week to cover product traction, go-to-market, and financial plans?',
     '',
     'Looking forward to the conversation.',
