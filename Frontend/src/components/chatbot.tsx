@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, type ReactNode } from 'react';
+import { useState, useEffect, useRef, useMemo, type ReactNode } from 'react';
 import type { AnalysisData } from '@/lib/types';
 import { interviewStartup, StartupInterviewerInput } from '@/ai/flows/startup-interviewer';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -8,6 +8,36 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Loader2, Send, User, Bot, Mail } from 'lucide-react';
 import { ScrollArea } from './ui/scroll-area';
+
+const EMAIL_REGEX = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+
+const collectEmails = (value: unknown, push: (email: string) => void): void => {
+  if (!value) {
+    return;
+  }
+
+  if (typeof value === 'string') {
+    const matches = value.match(EMAIL_REGEX);
+    if (matches) {
+      matches.forEach(match => {
+        const trimmed = match.trim();
+        if (trimmed) {
+          push(trimmed);
+        }
+      });
+    }
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    value.forEach(item => collectEmails(item, push));
+    return;
+  }
+
+  if (typeof value === 'object') {
+    Object.values(value as Record<string, unknown>).forEach(item => collectEmails(item, push));
+  }
+};
 
 type Message = {
   role: 'user' | 'model';
@@ -20,7 +50,7 @@ export default function Chatbot({ analysisData }: { analysisData: AnalysisData }
   const [isLoading, setIsLoading] = useState(true);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
 
-  const publicData = (() => {
+  const publicData = useMemo(() => {
     const raw = analysisData.public_data as unknown;
     if (!raw) return {} as Record<string, unknown>;
     if (typeof raw === 'string') {
@@ -36,11 +66,7 @@ export default function Chatbot({ analysisData }: { analysisData: AnalysisData }
       return raw as Record<string, unknown>;
     }
     return {} as Record<string, unknown>;
-  })();
-
-  const founders = Array.isArray(analysisData.metadata?.founder_names)
-    ? analysisData.metadata?.founder_names.filter(name => typeof name === 'string' && name.trim().length > 0)
-    : [];
+  }, [analysisData.public_data]);
 
   const namesMeta = (analysisData.metadata?.names ?? {}) as Partial<{
     company: string;
@@ -72,75 +98,53 @@ export default function Chatbot({ analysisData }: { analysisData: AnalysisData }
     productName && (!companyName || productName.toLowerCase() !== companyName.toLowerCase())
   );
   const combinedName = showProduct ? `${companyName || displayName} (Product: ${productName})` : (companyName || displayName);
-  const firstFounder = founders.find(name => name.trim().length > 0);
-  const emailGreeting = firstFounder
-    ? firstFounder.trim().split(/\s+/)[0]
-    : founders.length > 0
-    ? 'team'
-    : 'there';
-  const founderEmails = (() => {
-    const collected = new Set<string>();
-    const metadataExtras = analysisData.metadata as { founder_emails?: unknown; contact_email?: unknown };
-    if (metadataExtras) {
-      const direct = metadataExtras?.founder_emails;
-      if (Array.isArray(direct)) {
-        direct.forEach(value => {
-          if (typeof value === 'string' && value.trim().length > 0) {
-            collected.add(value.trim());
-          }
-        });
+
+  const founderEmails = useMemo(() => {
+    const seen = new Set<string>();
+    const ordered: string[] = [];
+
+    const push = (email: string) => {
+      const trimmed = email.trim();
+      if (!trimmed) {
+        return;
       }
-      if (typeof metadataExtras?.contact_email === 'string' && metadataExtras.contact_email.trim().length > 0) {
-        collected.add(metadataExtras.contact_email.trim());
+      const key = trimmed.toLowerCase();
+      if (seen.has(key)) {
+        return;
       }
+      seen.add(key);
+      ordered.push(trimmed);
+    };
+
+    const harvest = (value: unknown) => collectEmails(value, push);
+
+    const metadata = analysisData.metadata as {
+      founder_emails?: unknown;
+      contact_email?: unknown;
+      founder_contacts?: unknown;
+    } | undefined;
+
+    if (metadata) {
+      harvest(metadata.founder_emails);
+      harvest(metadata.contact_email);
+      harvest(metadata.founder_contacts);
     }
 
-    const memoFounders = analysisData.memo?.draft_v1?.company_overview?.founders ?? [];
-    memoFounders.forEach(founder => {
-      const possibleEmail = (founder as { email?: unknown }).email;
-      if (typeof possibleEmail === 'string' && possibleEmail.trim().length > 0) {
-        collected.add(possibleEmail.trim());
-      }
-    });
+    harvest(analysisData.memo?.draft_v1?.company_overview?.founders);
+    harvest(analysisData.memo?.draft_v1);
+    harvest(publicData);
 
-    const publicFounders = (publicData as { founders?: Array<{ email?: string | null }> } | undefined)?.founders;
-    if (Array.isArray(publicFounders)) {
-      publicFounders.forEach(founder => {
-        if (typeof founder?.email === 'string' && founder.email.trim().length > 0) {
-          collected.add(founder.email.trim());
-        }
-      });
-    }
-
-    const publicContacts = (publicData as { founder_contacts?: { emails?: unknown } } | undefined)?.founder_contacts;
-    if (publicContacts && Array.isArray(publicContacts.emails)) {
-      publicContacts.emails.forEach(value => {
-        if (typeof value === 'string' && value.trim().length > 0) {
-          collected.add(value.trim());
-        }
-      });
-    }
-
-    const metadataContacts = (analysisData.metadata as { founder_contacts?: { emails?: unknown } } | undefined)?.founder_contacts;
-    if (metadataContacts && Array.isArray(metadataContacts.emails)) {
-      metadataContacts.emails.forEach(value => {
-        if (typeof value === 'string' && value.trim().length > 0) {
-          collected.add(value.trim());
-        }
-      });
-    }
-
-    return Array.from(collected);
-  })();
+    return ordered;
+  }, [analysisData, publicData]);
 
   const mailSubject = `Intro call request – ${combinedName}`;
-  const discussionLabel = companyName || displayName || productName || 'your company';
-  const productLabel = productName ? `"${productName}"` : 'your product';
-  const companyLabel = discussionLabel ? `"${discussionLabel}"` : 'your company';
+  const fallbackCompany = companyName || displayName || productName || 'your company';
+  const productLabel = productName ? `(${productName})` : 'your product';
+  const companyLabel = fallbackCompany === 'your company' ? 'your company' : `(${fallbackCompany})`;
   const mailBody = [
-    `Hi ${emailGreeting},`,
+    'Hi,',
     '',
-    `I'd love to schedule time to discuss ${productLabel} from your company ${companyLabel}.`,
+    `I'd love to schedule time to discuss about ${productLabel} from your company ${companyLabel}.`,
     'Are you available for a 30-minute call this week to cover product traction, go-to-market, and financial plans?',
     '',
     'Looking forward to the conversation.',
