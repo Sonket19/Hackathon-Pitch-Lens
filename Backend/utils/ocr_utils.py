@@ -56,8 +56,8 @@ class PDFProcessor:
             # {"summary_res": response.text,
             #        "founder_response": founder_response,
             #        "sector_response": sector_response}
-            print("concise_summary : ", concise_summary.get('founder_response'))
-            print("concise_summary : ", concise_summary.get('sector_response'))
+            print("concise_summary : ",concise_summary['founder_response'])
+            print("concise_summary : ",concise_summary['sector_response'])
 
             logger.info(
                 "PDF processing timings (s) for %s: {\"ocr\": %.3f, \"summarizer\": %.3f, \"pages\": %d}",

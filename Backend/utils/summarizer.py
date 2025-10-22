@@ -50,102 +50,6 @@ class GeminiSummarizer:
             return GeminiSummarizer._coerce_string_list(parsed)
         return []
 
-    @staticmethod
-    def _dedupe_preserve_order(items: List[str]) -> List[str]:
-        seen = set()
-        deduped: List[str] = []
-        for item in items:
-            key = item.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            deduped.append(item)
-        return deduped
-
-    @staticmethod
-    def _strip_json_fences(payload: str) -> str:
-        return re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", payload, flags=re.MULTILINE).strip()
-
-    async def _legacy_summarize_pitch_deck(self, full_text: str) -> Dict[str, Any]:
-        summary_prompt = f"""
-        Analyze the following pitch deck content and extract information for these sections:
-        - problem: What problem is being solved?
-        - solution: What is the proposed solution?
-        - market: Market size, opportunity, and target customers
-        - team: Information about the founding team and key personnel
-        - traction: Current progress, metrics, customers, revenue
-        - financials: Financial projections, funding requirements, revenue model
-
-        Pitch deck content:
-        {full_text}
-
-        Return the analysis as a JSON object with the above keys. Be concise but comprehensive.
-        If a section is not clearly addressed in the pitch deck, indicate "Not specified" for that key.
-        """
-
-        summary_text = self._generate_text(summary_prompt)
-
-        founder_prompt = f"""
-        Analyze the following pitch deck content and extract list of founders in array:
-
-        Pitch deck content:
-        {full_text}
-
-        Return the analysis as an array.
-        If no data found send empty array.
-        """
-
-        founder_raw = self._generate_text(founder_prompt)
-        founder_clean = self._strip_json_fences(founder_raw)
-        try:
-            founder_data = json.loads(founder_clean) if founder_clean else []
-        except json.JSONDecodeError:
-            founder_data = founder_clean
-        founder_response = self._dedupe_preserve_order(self._coerce_string_list(founder_data))
-
-        sector_prompt = f"""
-        Analyze the following pitch deck content and extract name of sector in which this startup fall in:
-
-        Pitch deck content:
-        {full_text}
-
-        Return specific sector name only no extra word.
-        If no data found send empty string "".
-        """
-
-        sector_response = self._strip_json_fences(self._generate_text(sector_prompt))
-
-        company_name_prompt = f"""
-        Analyze the following pitch deck content and extract name of the startup/company this pitch is for:
-
-        Pitch deck content:
-        {full_text}
-
-        Return the organization or company name only with no extra words.
-        If no data found send empty string "".
-        """
-
-        company_name_response = self._strip_json_fences(self._generate_text(company_name_prompt))
-
-        product_name_prompt = f"""
-        Analyze the following pitch deck content and extract the primary product or platform name the startup is promoting.
-
-        Pitch deck content:
-        {full_text}
-
-        Return the product/solution name only with no extra words. If none is mentioned, return an empty string "".
-        """
-
-        product_name_response = self._strip_json_fences(self._generate_text(product_name_prompt))
-
-        return {
-            "summary_res": summary_text,
-            "founder_response": founder_response,
-            "sector_response": sector_response,
-            "company_name_response": company_name_response,
-            "product_name_response": product_name_response,
-        }
-
     async def summarize_pitch_deck(self, full_text: str) -> Dict[str, Any]:
         """Summarize pitch deck into structured sections."""
         try:
@@ -168,8 +72,13 @@ class GeminiSummarizer:
             - When unsure, leave the value as an empty string "".
             """
 
-            structured_raw = self._generate_text(prompt)
-            structured_clean = self._strip_json_fences(structured_raw)
+            summary_text = self._generate_text(prompt)
+
+            founder_prompt = f"""
+            Analyze the following pitch deck content and extract list of founders in array:
+
+            Pitch deck content:
+            {full_text}
 
             try:
                 structured_payload: Dict[str, Any] = json.loads(structured_clean) if structured_clean else {}
@@ -177,25 +86,54 @@ class GeminiSummarizer:
                 logger.warning("Failed to parse structured summary payload; falling back to legacy prompts")
                 return await self._legacy_summarize_pitch_deck(full_text)
 
-            summary_text = str(structured_payload.get("summary", "")).strip()
-            founder_response = self._dedupe_preserve_order(
-                self._coerce_string_list(structured_payload.get("founders", []))
-            )
-            sector_response = str(structured_payload.get("sector", "")).strip()
-            company_name_response = str(structured_payload.get("company_name", "")).strip()
-            product_name_response = str(structured_payload.get("product_name", "")).strip()
+            founder_raw = self._generate_text(founder_prompt)
+            founder_clean = re.sub(r"^```json\s*|\s*```$", "", founder_raw, flags=re.MULTILINE)
+            try:
+                founder_data = json.loads(founder_clean) if founder_clean else []
+            except json.JSONDecodeError:
+                founder_data = founder_clean
+            founder_response = self._coerce_string_list(founder_data)
+
+            sector_prompt = f"""
+            Analyze the following pitch deck content and extract name of sector in which this startup fall in:
+
+            Pitch deck content:
+            {full_text}
 
             if not summary_text:
                 summary_text = self._generate_text(
                     f"Provide a concise summary of the following pitch deck in under 160 words:\n{full_text}"
                 )
 
+            sector_response = re.sub(
+                r"^```[a-zA-Z]*\s*|\s*```$",
+                "",
+                self._generate_text(sector_prompt),
+                flags=re.MULTILINE,
+            ).strip()
+
+            company_name_prompt = f"""
+            Analyze the following pitch deck content and extract name of the startup/company this pitch is for:
+
+            Pitch deck content:
+            {full_text}
+
+            Return specific name only no extra words.
+            If no data found send empty string "".
+            """
+
+            company_name_response = re.sub(
+                r"^```[a-zA-Z]*\s*|\s*```$",
+                "",
+                self._generate_text(company_name_prompt),
+                flags=re.MULTILINE,
+            ).strip()
+
             return {
                 "summary_res": summary_text,
                 "founder_response": founder_response,
                 "sector_response": sector_response,
                 "company_name_response": company_name_response,
-                "product_name_response": product_name_response,
             }
 
         except Exception as exc:  # pragma: no cover - defensive logging
@@ -210,7 +148,6 @@ class GeminiSummarizer:
                 "founder_response": [],
                 "sector_response": "",
                 "company_name_response": "",
-                "product_name_response": "",
                 "summary_res": "",
             }
 
