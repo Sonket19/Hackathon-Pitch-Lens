@@ -156,14 +156,16 @@ export default function Chatbot({ analysisData }: { analysisData: AnalysisData }
     return ordered;
   }, [analysisData, publicData]);
 
-  const mailSubject = `Intro call request – ${combinedName}`;
   const fallbackCompany = companyName || displayName || productName || 'your company';
   const hasSpecificProduct = Boolean(productName);
+  const mailSubject = hasSpecificProduct
+    ? `Pitch Discussion - ${productName}`
+    : 'Pitch Discussion';
   const mailBodyLines = hasSpecificProduct
     ? [
         'Hi,',
         '',
-        `I'd love to schedule time to discuss about ${productName} from your company ${fallbackCompany}.`,
+        `I'd love to schedule time to discuss about (${productName}) from your company (${fallbackCompany}).`,
         'Are you available for a 30-minute call this week to cover product traction, go-to-market, and financial plans?',
         '',
         'Looking forward to the conversation.',
@@ -174,7 +176,7 @@ export default function Chatbot({ analysisData }: { analysisData: AnalysisData }
     : [
         'Hi,',
         '',
-        "I'd love to schedule time to discuss further about your pitch.",
+        "I'd love to schedule time to discuss further about your Pitch.",
         'Are you available for a 30-minute call this week to cover product traction, go-to-market, and financial plans?',
         '',
         'Looking forward to the conversation.',
