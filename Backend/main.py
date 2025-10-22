@@ -14,7 +14,14 @@ from google.cloud import storage
 
 from app.api.risk import router as risk_router
 from config.settings import settings
-from models.schemas import DealMetadata, MemoResponse, ProcessingStatus, Weightage
+from models.schemas import (
+    DealMetadata,
+    MemoResponse,
+    ProcessingStatus,
+    Weightage,
+    ChatRequest,
+    ChatResponse,
+)
 from utils.cache_utils import build_weight_signature
 from utils.docx_utils import MemoExporter
 from utils.firestore_utils import FirestoreManager
@@ -23,6 +30,7 @@ from utils.naming import build_company_display_name
 from utils.ocr_utils import PDFProcessor
 from utils.search_utils import PublicDataGatherer
 from utils.summarizer import GeminiSummarizer
+from utils.chat_agent import StartupChatAgent
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -61,6 +69,7 @@ gemini_summarizer = GeminiSummarizer()
 data_gatherer = PublicDataGatherer()
 memo_exporter = MemoExporter()
 firestore_manager = FirestoreManager()
+chat_agent = StartupChatAgent()
 
 # ---------- Endpoints ----------
 
@@ -196,6 +205,21 @@ async def generate_memo(deal_id: str, weightage: Weightage = Body(...)):
     except Exception as e:
         logger.error(f"Memo generation error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/chat/interview", response_model=ChatResponse)
+async def interview_chat(request: ChatRequest) -> ChatResponse:
+    """Respond to chatbot interactions using memo context."""
+
+    try:
+        history_payload = [message.model_dump() for message in request.history]
+        reply = await chat_agent.generate_response(request.analysis_data, history_payload)
+        return ChatResponse(message=reply)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover - network/service failures
+        logger.error("Chat generation error: %s", exc)
+        raise HTTPException(status_code=500, detail="Unable to generate chat response") from exc
 
 
 # ---------- Background Processing ----------

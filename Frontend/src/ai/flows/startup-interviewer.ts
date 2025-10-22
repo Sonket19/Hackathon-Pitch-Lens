@@ -378,8 +378,7 @@ function buildInitialGreeting(parsed: ParsedAnalysis): string {
   return pieces.join(' ');
 }
 
-export async function interviewStartup(input: StartupInterviewerInput): Promise<StartupInterviewerOutput> {
-  const parsedInput = StartupInterviewerInputSchema.parse(input);
+function runDeterministicFallback(parsedInput: StartupInterviewerInput): StartupInterviewerOutput {
   const parsedAnalysis = safeParseAnalysis(parsedInput.analysisData);
   const history = parsedInput.history;
 
@@ -403,11 +402,42 @@ export async function interviewStartup(input: StartupInterviewerInput): Promise<
       return 'risk';
     })();
     const builder = QUESTION_BUILDERS[nextTopic] ?? buildMissionQuestion;
-    const message = history.length === 0 ? buildInitialGreeting(parsedAnalysis) : builder(parsedAnalysis);
-    return StartupInterviewerOutputSchema.parse({message});
+    const fallbackMessage = history.length === 0 ? buildInitialGreeting(parsedAnalysis) : builder(parsedAnalysis);
+    return StartupInterviewerOutputSchema.parse({ message: fallbackMessage });
   }
 
   const lastUserMessage = history[history.length - 1];
-  const response = buildIntentResponse(lastUserMessage.content, parsedAnalysis);
-  return StartupInterviewerOutputSchema.parse({message: response});
+  const deterministicResponse = buildIntentResponse(lastUserMessage.content, parsedAnalysis);
+  return StartupInterviewerOutputSchema.parse({ message: deterministicResponse });
+}
+
+export async function interviewStartup(input: StartupInterviewerInput): Promise<StartupInterviewerOutput> {
+  const parsedInput = StartupInterviewerInputSchema.parse(input);
+  const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
+
+  if (apiBaseUrl) {
+    try {
+      const response = await fetch(`${apiBaseUrl}/chat/interview`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          analysisData: parsedInput.analysisData,
+          history: parsedInput.history,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Chat API returned ${response.status}`);
+      }
+
+      const data = await response.json();
+      return StartupInterviewerOutputSchema.parse(data);
+    } catch (error) {
+      console.error('Chat backend request failed, falling back to deterministic responses', error);
+    }
+  } else {
+    console.warn('NEXT_PUBLIC_API_BASE_URL is not defined; chatbot will use deterministic fallback responses.');
+  }
+
+  return runDeterministicFallback(parsedInput);
 }
