@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Loader2, Send, User, Bot, Mail } from 'lucide-react';
 import { ScrollArea } from './ui/scroll-area';
-import { ConnectFoundersButton } from './connect-founders-button';
+import { ConnectFoundersButton, RemainingCoverageButton } from './connect-founders-button';
 
 const EMAIL_REGEX = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
 
@@ -234,7 +234,8 @@ export default function Chatbot({ analysisData }: { analysisData: AnalysisData }
                 <Send className="w-4 h-4" />
               </Button>
             </div>
-            <div className="flex justify-end">
+            <div className="flex justify-end flex-wrap gap-2">
+              <RemainingCoverageButton analysisData={analysisData} />
               <ConnectFoundersButton analysisData={analysisData} />
             </div>
           </div>
