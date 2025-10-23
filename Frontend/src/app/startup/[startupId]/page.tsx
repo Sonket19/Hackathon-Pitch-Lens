@@ -1,7 +1,7 @@
 
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { use, useState, useEffect, useRef, useCallback } from 'react';
 import type { AnalysisData } from '@/lib/types';
 import AnalysisDashboard from '@/components/analysis-dashboard';
 import { Loader2 } from 'lucide-react';
@@ -36,8 +36,16 @@ const shouldContinuePolling = (data: AnalysisData | null) => {
   return true;
 };
 
-export default function StartupPage({ params }: { params: { startupId: string } }) {
-  const { startupId } = params;
+export default function StartupPage({
+  params,
+}: {
+  params: Promise<{ startupId: string }> | { startupId: string };
+}) {
+  const resolvedParams =
+    params && typeof params === 'object' && 'then' in (params as Promise<unknown>)
+      ? use(params as Promise<{ startupId: string }>)
+      : (params as { startupId: string });
+  const { startupId } = resolvedParams ?? { startupId: 'new' };
   const [analysisData, setAnalysisData] = useState<AnalysisData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
