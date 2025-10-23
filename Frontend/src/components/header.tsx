@@ -22,6 +22,12 @@ export default function Header() {
             Pitch Lens
           </h1>
         </Link>
+        <Link
+          href="/contact"
+          className={cn(buttonVariants({ variant: 'secondary' }), 'font-semibold')}
+        >
+          Contact
+        </Link>
       </div>
     </header>
   );
