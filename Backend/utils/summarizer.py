@@ -7,6 +7,7 @@ import base64
 import binascii
 import mimetypes
 import os
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
@@ -16,6 +17,68 @@ from vertexai.preview.generative_models import GenerationConfig, GenerativeModel
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
+
+
+DEFAULT_MEMO_TEMPLATE: Dict[str, Any] = {
+    "company_overview": {
+        "name": "Not available",
+        "sector": "Not available",
+        "founders": [],
+        "technology": "Not available",
+    },
+    "market_analysis": {
+        "industry_size_and_growth": {
+            "total_addressable_market": {
+                "name": "Not available",
+                "value": "Not available",
+                "cagr": "Not available",
+                "source": "Not available",
+            },
+            "serviceable_obtainable_market": {
+                "name": "Not available",
+                "value": "Not available",
+                "cagr": "Not available",
+                "source": "Not available",
+            },
+            "commentary": "Not available",
+        },
+        "recent_news": "Not available",
+        "competitor_details": [],
+        "sub_segment_opportunities": [],
+    },
+    "business_model": {
+        "revenue_streams": "Not available",
+        "pricing": "Not available",
+        "scalability": "Not available",
+        "unit_economics": {
+            "customer_lifetime_value_ltv": "Not available",
+            "customer_acquisition_cost_cac": "Not available",
+        },
+    },
+    "financials": {
+        "funding_history": "Not available",
+        "projections": [],
+        "valuation_rationale": "Not available",
+        "srr_mrr": {
+            "current_booked_arr": "Not available",
+            "current_mrr": "Not available",
+        },
+        "burn_and_runway": {
+            "funding_ask": "Not available",
+            "stated_runway": "Not available",
+            "implied_net_burn": "Not available",
+        },
+    },
+    "claims_analysis": [],
+    "risk_metrics": {
+        "composite_risk_score": 0,
+        "score_interpretation": "Not available",
+        "narrative_justification": "Not available",
+    },
+    "conclusion": {
+        "overall_attractiveness": "Not available",
+    },
+}
 
 
 class GeminiSummarizer:
@@ -32,19 +95,35 @@ class GeminiSummarizer:
         )
 
     def _generate_text(self, prompt: str, media_parts: Optional[List[Part]] = None) -> str:
-        if media_parts:
-            try:
-                prompt_part: Union[str, Part] = Part.from_text(prompt)  # type: ignore[attr-defined]
-                content: List[Union[str, Part]] = [prompt_part, *media_parts]
-            except AttributeError:
-                content = [prompt, *media_parts]
-        else:
-            content = prompt
+        """Send a prompt to Gemini, retrying without media if multimodal fails."""
 
-        response = self.model.generate_content(
-            content,
-            generation_config=self._generation_config,
-        )
+        def _build_content(parts: Optional[List[Part]]) -> Union[str, List[Union[str, Part]]]:
+            if parts:
+                try:
+                    prompt_part: Union[str, Part] = Part.from_text(prompt)  # type: ignore[attr-defined]
+                    return [prompt_part, *parts]
+                except AttributeError:
+                    return [prompt, *parts]
+            return prompt
+
+        try:
+            response = self.model.generate_content(
+                _build_content(media_parts),
+                generation_config=self._generation_config,
+            )
+        except Exception as exc:
+            if media_parts:
+                logger.warning(
+                    "Multimodal Gemini call failed (%s); retrying with text-only prompt.",
+                    exc,
+                )
+                response = self.model.generate_content(
+                    prompt,
+                    generation_config=self._generation_config,
+                )
+            else:
+                raise
+
         text = getattr(response, "text", "")
         return text.strip() if isinstance(text, str) else ""
 
@@ -541,11 +620,21 @@ class GeminiSummarizer:
                 media_parts=self._prepare_media_parts(media_inputs),
             )
             clean = re.sub(r"^```json\s*|\s*```$", "", raw_response, flags=re.MULTILINE).strip()
-            try:
-                return json.loads(clean) if clean else {}
-            except json.JSONDecodeError:
-                logger.warning("Gemini memo response was not valid JSON; storing raw payload under 'raw_text'")
-                return {"raw_text": clean}
+
+            if clean:
+                try:
+                    parsed = json.loads(clean)
+                    if isinstance(parsed, dict):
+                        return parsed
+                except json.JSONDecodeError:
+                    logger.warning(
+                        "Gemini memo response was not valid JSON; falling back to default template.",
+                    )
+
+            fallback = deepcopy(DEFAULT_MEMO_TEMPLATE)
+            if clean:
+                fallback["raw_text"] = clean
+            return fallback
 
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.error("Memo generation error: %s", exc)
