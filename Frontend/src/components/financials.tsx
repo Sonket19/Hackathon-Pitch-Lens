@@ -22,9 +22,10 @@ import {
 
 type MetricCardProps = {
   title: string;
-  value?: string;
+  value?: string | number | null;
   icon: ReactNode;
   tooltip?: string;
+  formatAsCurrency?: boolean;
 };
 
 type ChartDatum = {
@@ -133,26 +134,33 @@ const parsePercentageValue = (value?: string | null): number | null => {
   return numeric;
 };
 
-const formatCompactCurrency = (value?: number | null) => {
+const formatCompactCurrencyNumber = (value?: number | null) => {
   if (value === undefined || value === null || Number.isNaN(value)) {
     return 'N/A';
   }
 
   const absolute = Math.abs(value);
+  const suffixFormatter = (divisor: number, suffix: string) =>
+    `$${(value / divisor).toFixed(1).replace(/\.0$/, '')}${suffix}`;
+
   if (absolute >= 1_000_000_000_000) {
-    return `${(value / 1_000_000_000_000).toFixed(1).replace(/\.0$/, '')}T`;
+    return suffixFormatter(1_000_000_000_000, 'T');
   }
   if (absolute >= 1_000_000_000) {
-    return `${(value / 1_000_000_000).toFixed(1).replace(/\.0$/, '')}B`;
+    return suffixFormatter(1_000_000_000, 'B');
   }
   if (absolute >= 1_000_000) {
-    return `${(value / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
+    return suffixFormatter(1_000_000, 'M');
   }
   if (absolute >= 1_000) {
-    return `${(value / 1_000).toFixed(1).replace(/\.0$/, '')}K`;
+    return suffixFormatter(1_000, 'K');
   }
 
-  return value.toLocaleString();
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    maximumFractionDigits: value % 1 === 0 ? 0 : 2,
+  }).format(value);
 };
 
 const truncateLabel = (label: string, limit = 48) => {
@@ -176,7 +184,7 @@ const formatProbabilityDisplay = (value?: string | null): string | null => {
   const numeric = parsePercentageValue(value);
 
   if (numeric !== null) {
-    return `${numeric % 1 === 0 ? numeric.toFixed(0) : numeric.toFixed(1)}%`;
+    return formatNumericPercentage(numeric);
   }
 
   if (!value || isValueUnavailable(value)) {
@@ -186,7 +194,92 @@ const formatProbabilityDisplay = (value?: string | null): string | null => {
   return value;
 };
 
-const MetricCard = ({ title, value, icon, tooltip }: MetricCardProps) => (
+const clampPercentage = (value: number) => Math.min(100, Math.max(0, value));
+
+const formatNumericPercentage = (value: number) => {
+  const clamped = clampPercentage(value);
+  return `${clamped % 1 === 0 ? clamped.toFixed(0) : clamped.toFixed(1)}%`;
+};
+
+const calculateRiskScore = (probability?: string | null): number | null => {
+  const numericProbability = parsePercentageValue(probability);
+  if (numericProbability === null) {
+    return null;
+  }
+
+  return clampPercentage(100 - numericProbability);
+};
+
+const formatRiskScoreDisplay = (probability?: string | null): string | null => {
+  const riskScore = calculateRiskScore(probability);
+  if (riskScore === null) {
+    return null;
+  }
+
+  return formatNumericPercentage(riskScore);
+};
+
+const formatCurrencyValue = (value?: string | number | null): string => {
+  if (value === undefined || value === null) {
+    return 'N/A';
+  }
+
+  if (typeof value === 'string') {
+    if (isValueUnavailable(value)) {
+      return 'N/A';
+    }
+  }
+
+  const numeric = typeof value === 'number' ? (Number.isFinite(value) ? value : null) : parseFinancialNumber(value);
+
+  if (numeric !== null) {
+    const formatter = new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD',
+      maximumFractionDigits: Math.abs(numeric) < 1 ? 2 : 0,
+    });
+    return formatter.format(numeric);
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return 'N/A';
+    }
+
+    if (trimmed.startsWith('$')) {
+      return trimmed;
+    }
+
+    if (/^usd\b/i.test(trimmed)) {
+      return `$${trimmed.replace(/^usd\b/i, '').trim()}`;
+    }
+
+    return `$${trimmed}`;
+  }
+
+  return 'N/A';
+};
+
+const MetricCard = ({ title, value, icon, tooltip, formatAsCurrency }: MetricCardProps) => {
+  const displayValue = (() => {
+    if (formatAsCurrency) {
+      return formatCurrencyValue(value ?? null);
+    }
+
+    if (typeof value === 'number') {
+      return value.toString();
+    }
+
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      return trimmed || 'N/A';
+    }
+
+    return 'N/A';
+  })();
+
+  return (
   <Card>
     <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
       <CardTitle className="text-sm font-medium text-muted-foreground">{title}</CardTitle>
@@ -206,10 +299,11 @@ const MetricCard = ({ title, value, icon, tooltip }: MetricCardProps) => (
       )}
     </CardHeader>
     <CardContent>
-      <div className="text-2xl font-bold font-headline">{value || 'N/A'}</div>
+      <div className="text-2xl font-bold font-headline">{displayValue}</div>
     </CardContent>
   </Card>
-);
+  );
+};
 
 export default function Financials({ data, claims }: { data: FinancialsType, claims: ClaimsAnalysisType }) {
   const [suggestions, setSuggestions] = useState<string[] | undefined | null>(null);
@@ -251,9 +345,13 @@ export default function Financials({ data, claims }: { data: FinancialsType, cla
         name: truncateLabel(claim.claim, 40) || `Claim ${index + 1}`,
         fullLabel: claim.claim,
         baseRevenue: baseRevenueValue ?? undefined,
-        baseRevenueDisplay: assumptions.base_revenue ?? undefined,
+        baseRevenueDisplay: formatCurrencyValue(
+          baseRevenueValue ?? assumptions.base_revenue ?? null,
+        ) ?? undefined,
         averageContractValue: averageContractValueValue ?? undefined,
-        averageContractValueDisplay: assumptions.average_contract_value ?? undefined,
+        averageContractValueDisplay: formatCurrencyValue(
+          averageContractValueValue ?? assumptions.average_contract_value ?? null,
+        ) ?? undefined,
       };
     })
     .filter((value): value is EstimationDatum => value !== null);
@@ -277,9 +375,25 @@ export default function Financials({ data, claims }: { data: FinancialsType, cla
       <div>
         <h2 className="font-headline text-2xl mb-4">Key Metrics</h2>
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          <MetricCard title="ARR" value={data?.srr_mrr?.current_booked_arr} icon={<BarChart2 className="h-4 w-4 text-muted-foreground" />} />
-          <MetricCard title="MRR" value={data?.srr_mrr?.current_mrr} icon={<Calendar className="h-4 w-4 text-muted-foreground" />} />
-          <MetricCard title="Est. Burn Rate" value={data?.burn_and_runway?.implied_net_burn} icon={<HelpCircle className="h-4 w-4 text-muted-foreground" />} tooltip="Estimated by dividing funding ask by runway" />
+          <MetricCard
+            title="ARR"
+            value={data?.srr_mrr?.current_booked_arr}
+            icon={<BarChart2 className="h-4 w-4 text-muted-foreground" />}
+            formatAsCurrency
+          />
+          <MetricCard
+            title="MRR"
+            value={data?.srr_mrr?.current_mrr}
+            icon={<Calendar className="h-4 w-4 text-muted-foreground" />}
+            formatAsCurrency
+          />
+          <MetricCard
+            title="Est. Burn Rate"
+            value={data?.burn_and_runway?.implied_net_burn}
+            icon={<HelpCircle className="h-4 w-4 text-muted-foreground" />}
+            tooltip="Estimated by dividing funding ask by runway"
+            formatAsCurrency
+          />
           <MetricCard title="Runway" value={data?.burn_and_runway?.stated_runway} icon={<GitBranch className="h-4 w-4 text-muted-foreground" />} />
         </div>
       </div>
@@ -291,7 +405,7 @@ export default function Financials({ data, claims }: { data: FinancialsType, cla
         <CardContent className="space-y-4">
           <div className="space-y-1">
             <h4 className="font-semibold">Current Ask</h4>
-            <p className="text-xl font-bold font-headline text-primary">{data?.burn_and_runway?.funding_ask || 'N/A'}</p>
+            <p className="text-xl font-bold font-headline text-primary">{formatCurrencyValue(data?.burn_and_runway?.funding_ask ?? null)}</p>
           </div>
           <div className="space-y-1">
             <h4 className="font-semibold">Valuation Rationale</h4>
@@ -312,11 +426,11 @@ export default function Financials({ data, claims }: { data: FinancialsType, cla
           <div className="grid gap-3">
             <div className="flex items-center justify-between rounded-md bg-secondary/50 p-3">
               <span className="text-sm font-medium text-muted-foreground">ARR</span>
-              <span className="text-lg font-semibold font-headline">{data?.srr_mrr?.current_booked_arr || 'N/A'}</span>
+              <span className="text-lg font-semibold font-headline">{formatCurrencyValue(data?.srr_mrr?.current_booked_arr ?? null)}</span>
             </div>
             <div className="flex items-center justify-between rounded-md bg-secondary/50 p-3">
               <span className="text-sm font-medium text-muted-foreground">MRR</span>
-              <span className="text-lg font-semibold font-headline">{data?.srr_mrr?.current_mrr || 'N/A'}</span>
+              <span className="text-lg font-semibold font-headline">{formatCurrencyValue(data?.srr_mrr?.current_mrr ?? null)}</span>
             </div>
           </div>
         </CardContent>
@@ -332,7 +446,7 @@ export default function Financials({ data, claims }: { data: FinancialsType, cla
               {projections.map((projection) => (
                 <li key={projection.year} className="flex justify-between items-center p-2 rounded-md bg-secondary/30">
                   <span className="font-medium">{projection.year}</span>
-                  <span className="font-bold text-lg font-headline text-primary">{projection.revenue}</span>
+                  <span className="font-bold text-lg font-headline text-primary">{formatCurrencyValue(projection.revenue)}</span>
                 </li>
               ))}
             </ul>
@@ -357,7 +471,7 @@ export default function Financials({ data, claims }: { data: FinancialsType, cla
                   axisLine={false}
                   tickLine={false}
                   tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 12 }}
-                  tickFormatter={(value) => `${value}%`}
+                  tickFormatter={(value) => formatNumericPercentage(Number(value))}
                 />
                 <YAxis
                   dataKey="name"
@@ -370,7 +484,9 @@ export default function Financials({ data, claims }: { data: FinancialsType, cla
                 <RechartsTooltip
                   formatter={(_, __, payload) => {
                     const formatted = payload?.payload as ChartDatum | undefined;
-                    return [formatted?.display ?? `${formatted?.value?.toFixed(1) ?? '0'}%`, 'Simulated Probability'];
+                    const numericValue = formatted?.value ?? null;
+                    const fallback = numericValue === null ? 'N/A' : formatNumericPercentage(numericValue);
+                    return [formatted?.display ?? fallback, 'Simulated Probability'];
                   }}
                   labelFormatter={(_, payload) => (payload?.[0]?.payload as ChartDatum | undefined)?.fullLabel ?? ''}
                   contentStyle={{
@@ -401,7 +517,7 @@ export default function Financials({ data, claims }: { data: FinancialsType, cla
                   axisLine={false}
                   tickLine={false}
                   tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 12 }}
-                  tickFormatter={(value) => formatCompactCurrency(Number(value))}
+                  tickFormatter={(value) => formatCompactCurrencyNumber(Number(value))}
                 />
                 <YAxis
                   dataKey="name"
@@ -416,12 +532,12 @@ export default function Financials({ data, claims }: { data: FinancialsType, cla
                     const formatted = payload?.payload as EstimationDatum | undefined;
                     if (name === 'baseRevenue') {
                       return [
-                        formatted?.baseRevenueDisplay ?? formatCompactCurrency(value),
+                        formatted?.baseRevenueDisplay ?? formatCompactCurrencyNumber(value),
                         'Base Revenue',
                       ];
                     }
                     return [
-                      formatted?.averageContractValueDisplay ?? formatCompactCurrency(value),
+                      formatted?.averageContractValueDisplay ?? formatCompactCurrencyNumber(value),
                       'Average Contract Value',
                     ];
                   }}
@@ -449,6 +565,7 @@ export default function Financials({ data, claims }: { data: FinancialsType, cla
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           {claimsList.map((claim, index) => {
             const probabilityDisplay = formatProbabilityDisplay(claim.simulated_probability);
+            const riskScoreDisplay = formatRiskScoreDisplay(claim.simulated_probability);
             return (
               <Card key={index}>
                 <CardHeader>
@@ -464,6 +581,17 @@ export default function Financials({ data, claims }: { data: FinancialsType, cla
                   {probabilityDisplay === null && (
                     <p className="text-xs text-muted-foreground">
                       The model did not return a probability estimate for this claim.
+                    </p>
+                  )}
+                  <div className="flex justify-between items-center bg-secondary/30 p-4 rounded-lg">
+                    <span className="font-semibold text-lg">Risk Score</span>
+                    <span className="text-2xl font-bold font-headline text-destructive">
+                      {riskScoreDisplay ?? 'N/A'}
+                    </span>
+                  </div>
+                  {riskScoreDisplay !== null && (
+                    <p className="text-xs text-muted-foreground">
+                      Higher percentages represent elevated diligence risk for this claim.
                     </p>
                   )}
                   <div className="space-y-1">
