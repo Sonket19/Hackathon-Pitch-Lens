@@ -8,13 +8,17 @@ logger = logging.getLogger(__name__)
 
 class FirestoreManager:
     def __init__(self):
-        self.db = firestore.Client()
         self.collection_name = "deals"
         self.cache_collection_name = "deck_cache"
 
     async def create_deal(self, deal_id: str, data: Dict[str, Any]) -> bool:
         """Create new deal document"""
         try:
+            if not self._use_firestore or not self.db:
+                self._deals_store[deal_id] = {"metadata": data}
+                logger.info("Created deal document in local store: %s", deal_id)
+                return True
+
             doc_ref = self.db.collection(self.collection_name).document(deal_id)
             doc_ref.set({"metadata": data})
             logger.info(f"Created deal document: {deal_id}")
@@ -22,11 +26,20 @@ class FirestoreManager:
 
         except Exception as e:
             logger.error(f"Firestore create error: {str(e)}")
-            return False
+            if self._use_firestore:
+                return False
+            self._deals_store[deal_id] = {"metadata": data}
+            return True
 
     async def get_deal(self, deal_id: str) -> Optional[Dict[str, Any]]:
         """Get deal document by ID"""
         try:
+            if not self._use_firestore or not self.db:
+                deal = self._deals_store.get(deal_id)
+                if deal is None:
+                    logger.warning("Deal not found in local store: %s", deal_id)
+                return deal
+
             doc_ref = self.db.collection(self.collection_name).document(deal_id)
             doc = doc_ref.get()
 
@@ -38,11 +51,19 @@ class FirestoreManager:
 
         except Exception as e:
             logger.error(f"Firestore get error: {str(e)}")
-            return None
+            if self._use_firestore:
+                return None
+            return self._deals_store.get(deal_id)
 
     async def update_deal(self, deal_id: str, updates: Dict[str, Any]) -> bool:
         """Update deal document"""
         try:
+            if not self._use_firestore or not self.db:
+                doc = self._deals_store.setdefault(deal_id, {"metadata": {}})
+                self._apply_local_updates(doc, updates)
+                logger.info("Updated deal document in local store: %s", deal_id)
+                return True
+
             doc_ref = self.db.collection(self.collection_name).document(deal_id)
 
             # Handle nested updates (e.g., "metadata.status")
@@ -60,11 +81,20 @@ class FirestoreManager:
 
         except Exception as e:
             logger.error(f"Firestore update error: {str(e)}")
-            return False
+            if self._use_firestore:
+                return False
+            doc = self._deals_store.setdefault(deal_id, {"metadata": {}})
+            self._apply_local_updates(doc, updates)
+            return True
 
     async def delete_deal(self, deal_id: str) -> bool:
         """Delete deal document"""
         try:
+            if not self._use_firestore or not self.db:
+                existed = self._deals_store.pop(deal_id, None)
+                logger.info("Deleted deal from local store: %s", deal_id)
+                return existed is not None
+
             doc_ref = self.db.collection(self.collection_name).document(deal_id)
             doc_ref.delete()
             logger.info(f"Deleted deal document: {deal_id}")
@@ -72,11 +102,21 @@ class FirestoreManager:
 
         except Exception as e:
             logger.error(f"Firestore delete error: {str(e)}")
-            return False
+            if self._use_firestore:
+                return False
+            return self._deals_store.pop(deal_id, None) is not None
 
     async def list_deals(self, limit: int = 50) -> List[Dict[str, Any]]:
         """List all deals with pagination"""
         try:
+            if not self._use_firestore or not self.db:
+                deals = []
+                for deal_id, payload in list(self._deals_store.items())[:limit]:
+                    entry = dict(payload)
+                    entry['deal_id'] = deal_id
+                    deals.append(entry)
+                return deals
+
             docs = self.db.collection(self.collection_name).limit(limit).stream()
 
             deals = []
@@ -89,7 +129,140 @@ class FirestoreManager:
 
         except Exception as e:
             logger.error(f"Firestore list error: {str(e)}")
-            return []
+            if self._use_firestore:
+                return []
+            deals = []
+            for deal_id, payload in list(self._deals_store.items())[:limit]:
+                entry = dict(payload)
+                entry['deal_id'] = deal_id
+                deals.append(entry)
+            return deals
+
+    async def get_cached_deck(self, deck_hash: Optional[str]) -> Optional[Dict[str, Any]]:
+        if not deck_hash:
+            return None
+
+        try:
+            if not self._use_firestore or not self.db:
+                return self._cache_store.get(deck_hash)
+
+            doc_ref = self.db.collection(self.cache_collection_name).document(deck_hash)
+            doc = doc_ref.get()
+            if doc.exists:
+                return doc.to_dict()
+        except Exception as e:
+            logger.error(f"Firestore cache fetch error: {str(e)}")
+            if not self._use_firestore:
+                return self._cache_store.get(deck_hash)
+        return None
+
+    async def set_cached_deck(self, deck_hash: Optional[str], payload: Dict[str, Any]) -> None:
+        if not deck_hash:
+            return
+
+        try:
+            if not self._use_firestore or not self.db:
+                self._cache_store[deck_hash] = {
+                    **(self._cache_store.get(deck_hash, {})),
+                    **payload,
+                    "deck_hash": deck_hash,
+                }
+                logger.info("Cached deck summary locally for hash %s", deck_hash)
+                return
+
+            doc_ref = self.db.collection(self.cache_collection_name).document(deck_hash)
+            doc_ref.set(
+                {
+                    **payload,
+                    "deck_hash": deck_hash,
+                    "updated_at": firestore.SERVER_TIMESTAMP,
+                },
+                merge=True,
+            )
+            logger.info("Cached deck summary for hash %s", deck_hash)
+        except Exception as e:
+            logger.error(f"Firestore cache set error: {str(e)}")
+            if not self._use_firestore:
+                self._cache_store[deck_hash] = {
+                    **(self._cache_store.get(deck_hash, {})),
+                    **payload,
+                    "deck_hash": deck_hash,
+                }
+
+    async def get_cached_memo(self, deck_hash: Optional[str], weight_signature: str) -> Optional[Dict[str, Any]]:
+        if not deck_hash or not weight_signature:
+            return None
+
+        cache_doc = await self.get_cached_deck(deck_hash)
+        if not cache_doc:
+            return None
+
+        return extract_cached_memo(cache_doc, weight_signature)
+
+    async def cache_memo(
+        self,
+        deck_hash: Optional[str],
+        weight_signature: str,
+        memo_payload: Dict[str, Any],
+        weightage: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if not deck_hash or not weight_signature:
+            return
+
+        try:
+            if not self._use_firestore or not self.db:
+                deck_entry = self._cache_store.setdefault(deck_hash, {"deck_hash": deck_hash, "memos": {}})
+                memos = deck_entry.setdefault("memos", {})
+                memos[weight_signature] = {
+                    "memo_json": memo_payload,
+                    "weight_signature": weight_signature,
+                    "weightage": weightage or {},
+                }
+                logger.info("Cached memo locally for hash %s", deck_hash)
+                return
+
+            doc_ref = self.db.collection(self.cache_collection_name).document(deck_hash)
+            doc_ref.set(
+                {
+                    "deck_hash": deck_hash,
+                    "updated_at": firestore.SERVER_TIMESTAMP,
+                    "memos": {
+                        weight_signature: {
+                            "memo_json": memo_payload,
+                            "weight_signature": weight_signature,
+                            "weightage": weightage or {},
+                        }
+                    },
+                },
+                merge=True,
+            )
+            logger.info(
+                "Cached memo for hash %s with signature %s",
+                deck_hash,
+                weight_signature,
+            )
+        except Exception as e:
+            logger.error(f"Firestore memo cache set error: {str(e)}")
+            if not self._use_firestore:
+                deck_entry = self._cache_store.setdefault(deck_hash, {"deck_hash": deck_hash, "memos": {}})
+                memos = deck_entry.setdefault("memos", {})
+                memos[weight_signature] = {
+                    "memo_json": memo_payload,
+                    "weight_signature": weight_signature,
+                    "weightage": weightage or {},
+                }
+
+    def _apply_local_updates(self, document: Dict[str, Any], updates: Dict[str, Any]) -> None:
+        for key, value in updates.items():
+            parts = key.split(".")
+            target = document
+            for part in parts[:-1]:
+                current = target.get(part)
+                if not isinstance(current, dict):
+                    current = {}
+                    target[part] = current
+                target = current
+            target[parts[-1]] = value
 
     async def get_cached_deck(self, deck_hash: Optional[str]) -> Optional[Dict[str, Any]]:
         if not deck_hash:

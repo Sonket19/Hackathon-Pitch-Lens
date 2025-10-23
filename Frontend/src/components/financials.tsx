@@ -40,7 +40,14 @@ export default function Financials({ data, claims }: { data: FinancialsType, cla
   const [suggestions, setSuggestions] = useState<string[] | undefined | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  
+
+  const arrMetrics = data?.srr_mrr ?? (data as unknown as { arr_mrr?: FinancialsType['srr_mrr'] }).arr_mrr;
+  const burnMetrics = (data as unknown as { burn_and_runway?: FinancialsType['burn_and_runway'] }).burn_and_runway ?? data?.burn_and_runway;
+  const projections = Array.isArray((data as unknown as { projections?: FinancialsType['projections'] }).projections)
+    ? (data as unknown as { projections?: FinancialsType['projections'] }).projections ?? []
+    : data?.projections ?? [];
+  const claimItems = Array.isArray(claims) ? claims : [];
+
   const handleGenerateSuggestions = async () => {
     setIsLoading(true);
     setError(null);
@@ -59,10 +66,10 @@ export default function Financials({ data, claims }: { data: FinancialsType, cla
       <div>
         <h2 className="font-headline text-2xl mb-4">Key Metrics</h2>
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          <MetricCard title="ARR" value={data.arr_mrr.current_booked_arr} icon={<BarChart2 className="h-4 w-4 text-muted-foreground" />} />
-          <MetricCard title="MRR" value={data.arr_mrr.current_mrr} icon={<Calendar className="h-4 w-4 text-muted-foreground" />} />
-          <MetricCard title="Est. Burn Rate" value={data.burn_and_runway.implied_net_burn} icon={<HelpCircle className="h-4 w-4 text-muted-foreground" />} tooltip="Estimated by dividing funding ask by runway" />
-          <MetricCard title="Runway" value={data.burn_and_runway.stated_runway} icon={<GitBranch className="h-4 w-4 text-muted-foreground" />} />
+          <MetricCard title="ARR" value={arrMetrics?.current_booked_arr} icon={<BarChart2 className="h-4 w-4 text-muted-foreground" />} />
+          <MetricCard title="MRR" value={arrMetrics?.current_mrr} icon={<Calendar className="h-4 w-4 text-muted-foreground" />} />
+          <MetricCard title="Est. Burn Rate" value={burnMetrics?.implied_net_burn} icon={<HelpCircle className="h-4 w-4 text-muted-foreground" />} tooltip="Estimated by dividing funding ask by runway" />
+          <MetricCard title="Runway" value={burnMetrics?.stated_runway} icon={<GitBranch className="h-4 w-4 text-muted-foreground" />} />
         </div>
       </div>
       
@@ -73,7 +80,7 @@ export default function Financials({ data, claims }: { data: FinancialsType, cla
         <CardContent className="space-y-4">
           <div className="space-y-1">
             <h4 className="font-semibold">Current Ask</h4>
-            <p className="text-xl font-bold font-headline text-primary">{data.burn_and_runway.funding_ask}</p>
+            <p className="text-xl font-bold font-headline text-primary">{burnMetrics?.funding_ask || 'N/A'}</p>
           </div>
           <div className="space-y-1">
             <h4 className="font-semibold">Valuation Rationale</h4>
@@ -93,7 +100,7 @@ export default function Financials({ data, claims }: { data: FinancialsType, cla
           </CardHeader>
           <CardContent>
             <ul className="space-y-2">
-            {data.projections.map((projection) => (
+            {projections.map((projection) => (
               <li key={projection.year} className="flex justify-between items-center p-2 rounded-md hover:bg-secondary/50">
                 <span className="font-medium">{projection.year}</span>
                 <span className="font-bold text-lg font-headline text-primary">{projection.revenue}</span>
@@ -103,7 +110,7 @@ export default function Financials({ data, claims }: { data: FinancialsType, cla
           </CardContent>
         </Card>
 
-        {claims.map((claim, index) => (
+        {claimItems.map((claim, index) => (
           <Card key={index}>
             <CardHeader>
               <CardTitle className="font-headline text-xl flex items-center gap-3"><Target className="w-6 h-6 text-primary"/>Claim Analysis: {claim.claim}</CardTitle>

@@ -9,6 +9,7 @@ import time
 
 from google.cloud import vision
 from google.cloud import storage
+from PyPDF2 import PdfReader
 
 from config.settings import settings
 from utils.summarizer import GeminiSummarizer
@@ -24,12 +25,19 @@ class PDFProcessor:
     """
 
     def __init__(self):
-        # Vision client (async PDF OCR)
-        self.vision_client = vision.ImageAnnotatorClient()
-        # Storage client for reading back JSON outputs
-        self.storage_client = storage.Client()
-        # Summarizer (Gemini)
+        # Summarizer (Gemini or local fallback)
         self.summarizer = GeminiSummarizer()
+
+        self._use_vision = True
+        self.vision_client = None
+        self.storage_client = None
+
+        try:
+            self.vision_client = vision.ImageAnnotatorClient()
+            self.storage_client = storage.Client()
+        except Exception as exc:  # pragma: no cover - depends on external services
+            logger.warning("Google Vision unavailable (%s); using local PDF extraction", exc)
+            self._use_vision = False
 
     async def process_pdf(self, gcs_path: str) -> Dict:
         """

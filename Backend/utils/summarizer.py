@@ -262,6 +262,65 @@ class GeminiSummarizer:
                 "summary_res": "",
             }
 
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.error("Pitch deck summarization error: %s", exc)
+            return await self._local_summarize_pitch_deck(full_text)
+
+    async def _local_summarize_pitch_deck(self, full_text: str) -> Dict[str, Any]:
+        """Heuristic summariser used when Gemini is unavailable."""
+
+        cleaned_lines = [line.strip() for line in full_text.splitlines() if line.strip()]
+        joined_text = " ".join(cleaned_lines)
+        sentences = re.split(r"(?<=[.!?])\s+", joined_text)
+        summary = " ".join(sentences[:5]).strip()
+        if not summary:
+            summary = textwrap.shorten(joined_text or "No content supplied.", width=320, placeholder="...")
+
+        founder_candidates: List[str] = []
+        for line in cleaned_lines:
+            if re.search(r"(?i)founder|ceo|team", line):
+                founder_candidates.extend(
+                    re.findall(r"[A-Z][A-Za-z]+(?: [A-Z][A-Za-z]+)+", line)
+                )
+        founders = self._dedupe_preserve_order(founder_candidates)[:3]
+
+        sector = ""
+        lowered = joined_text.lower()
+        sector_keywords = {
+            "artificial intelligence": ["artificial intelligence", "ai", "machine learning"],
+            "fintech": ["fintech", "payments", "banking"],
+            "healthcare": ["health", "healthcare", "medtech", "biotech"],
+            "climate": ["climate", "sustainability", "energy"],
+        }
+        for label, keywords in sector_keywords.items():
+            if any(keyword in lowered for keyword in keywords):
+                sector = label
+                break
+        if not sector and cleaned_lines:
+            sector = cleaned_lines[0].split(" ")[0]
+
+        company_name = ""
+        if cleaned_lines:
+            headline = cleaned_lines[0]
+            match = re.findall(r"[A-Z][A-Za-z]+(?: [A-Z][A-Za-z]+)+", headline)
+            if match:
+                company_name = match[0]
+
+        product_name = ""
+        if len(cleaned_lines) > 1:
+            second_line = cleaned_lines[1]
+            product_match = re.findall(r"[A-Z][A-Za-z]+(?: [A-Z][A-Za-z]+)+", second_line)
+            if product_match:
+                product_name = product_match[0]
+
+        return {
+            "summary_res": summary,
+            "founder_response": founders,
+            "sector_response": sector,
+            "company_name_response": company_name,
+            "product_name_response": product_name,
+        }
+
     async def summarize_audio_transcript(self, transcript: str) -> str:
         """Summarize audio transcript."""
         try:
