@@ -1,14 +1,17 @@
 # utils/ocr_utils.py
 
 from typing import Dict, List, Tuple
+import asyncio
 import os
 import json
 import uuid
 import logging
 import time
+from pathlib import Path
 
 from google.cloud import vision
 from google.cloud import storage
+from PyPDF2 import PdfReader
 
 from config.settings import settings
 from utils.summarizer import GeminiSummarizer
@@ -24,12 +27,19 @@ class PDFProcessor:
     """
 
     def __init__(self):
-        # Vision client (async PDF OCR)
-        self.vision_client = vision.ImageAnnotatorClient()
-        # Storage client for reading back JSON outputs
-        self.storage_client = storage.Client()
-        # Summarizer (Gemini)
+        # Summarizer (Gemini or local fallback)
         self.summarizer = GeminiSummarizer()
+
+        self._use_vision = True
+        self.vision_client = None
+        self.storage_client = None
+
+        try:
+            self.vision_client = vision.ImageAnnotatorClient()
+            self.storage_client = storage.Client()
+        except Exception as exc:  # pragma: no cover - depends on external services
+            logger.warning("Google Vision unavailable (%s); using local PDF extraction", exc)
+            self._use_vision = False
 
     async def process_pdf(self, gcs_path: str) -> Dict:
         """
@@ -41,7 +51,10 @@ class PDFProcessor:
         try:
             print("Process PDF Called")
             ocr_start = time.perf_counter()
-            page_texts, logo_candidates = await self._extract_text_from_pdf(gcs_path)
+            if self._use_vision and str(gcs_path).startswith("gs://"):
+                page_texts, logo_candidates = await self._extract_text_from_pdf(gcs_path)
+            else:
+                page_texts, logo_candidates = await self._extract_text_locally(gcs_path)
             ocr_duration = time.perf_counter() - ocr_start
 
             # Join page texts to feed the summarizer
@@ -81,6 +94,25 @@ class PDFProcessor:
             logger.error(f"PDF processing error: {str(e)}")
             # Return a safe structure so callers don't break
             return {"raw": {"1": ""}, "concise": "Error in OCR processing."}
+
+    async def _extract_text_locally(self, file_path: str) -> Tuple[List[str], List[str]]:
+        """Extract text from a local PDF without Google Vision."""
+
+        def _read_pdf() -> List[str]:
+            path = Path(file_path)
+            if not path.exists():
+                raise FileNotFoundError(f"PDF not found at {file_path}")
+
+            reader = PdfReader(path)
+            texts: List[str] = []
+            for page in reader.pages:
+                page_text = page.extract_text() or ""
+                if page_text.strip():
+                    texts.append(page_text.strip())
+            return texts if texts else [""]
+
+        texts = await asyncio.to_thread(_read_pdf)
+        return texts, []
 
     async def _extract_text_from_pdf(self, gcs_path: str) -> Tuple[List[str], List[str]]:
         """
