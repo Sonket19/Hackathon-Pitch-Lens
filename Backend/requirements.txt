@@ -7,6 +7,7 @@ google-cloud-vision
 google-cloud-speech
 google-cloud-firestore
 google-cloud-aiplatform
+google-cloud-bigquery
 google-api-python-client
 python-docx
 PyPDF2

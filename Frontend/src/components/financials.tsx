@@ -1,17 +1,170 @@
 
 'use client';
 
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import type { Financials as FinancialsType, ClaimsAnalysis as ClaimsAnalysisType } from '@/lib/types';
 import { generateFinancialMetricsDashboard } from '@/ai/flows/financial-metrics-dashboard';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { Badge } from '@/components/ui/badge';
-import { BarChart2, Briefcase, Calendar, Target, HelpCircle, GitBranch, PiggyBank, Sparkles, Loader2 } from 'lucide-react';
+import { BarChart2, Briefcase, Calendar, Target, HelpCircle, GitBranch, PiggyBank, Sparkles, Loader2, PieChart, TrendingUp } from 'lucide-react';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import {
+  ResponsiveContainer,
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip as RechartsTooltip,
+  BarChart,
+  Bar,
+} from 'recharts';
 
-const MetricCard = ({ title, value, icon, tooltip }: { title: string, value?: string, icon: React.ReactNode, tooltip?: string }) => (
+type MetricCardProps = {
+  title: string;
+  value?: string;
+  icon: ReactNode;
+  tooltip?: string;
+};
+
+type ChartDatum = {
+  name: string;
+  value: number;
+  display?: string;
+  fullLabel?: string;
+};
+
+const isValueUnavailable = (value?: string | null) => {
+  if (!value) {
+    return true;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    return true;
+  }
+
+  return ['n/a', 'na', 'not available', 'none', 'unknown', 'tbd', '-', '—', 'pending'].some((token) =>
+    normalized.includes(token),
+  );
+};
+
+const parseFinancialNumber = (value?: string | null): number | null => {
+  if (!value || isValueUnavailable(value)) {
+    return null;
+  }
+
+  const normalized = value.toString().trim().toLowerCase();
+  const cleaned = normalized.replace(/,/g, '');
+  const match = cleaned.match(/-?\d+(\.\d+)?/);
+
+  if (!match) {
+    return null;
+  }
+
+  let numeric = parseFloat(match[0]);
+  if (Number.isNaN(numeric)) {
+    return null;
+  }
+
+  const startIndex = match.index ?? 0;
+  const before = cleaned.slice(0, startIndex);
+  const after = cleaned.slice(startIndex + match[0].length);
+  const tokens = `${before} ${after}`
+    .match(/[a-z]+/g)
+    ?.map((token) => token.toLowerCase()) ?? [];
+
+  const multipliers: Record<string, number> = {
+    trillion: 1_000_000_000_000,
+    tn: 1_000_000_000_000,
+    t: 1_000_000_000_000,
+    billion: 1_000_000_000,
+    bn: 1_000_000_000,
+    b: 1_000_000_000,
+    million: 1_000_000,
+    mn: 1_000_000,
+    mm: 1_000_000,
+    thousand: 1_000,
+    k: 1_000,
+    crore: 10_000_000,
+    crores: 10_000_000,
+    cr: 10_000_000,
+    lakh: 100_000,
+    lakhs: 100_000,
+    lac: 100_000,
+  };
+
+  for (const token of tokens) {
+    if (multipliers[token]) {
+      return numeric * multipliers[token];
+    }
+  }
+
+  const suffixWord = after.trim().match(/^[a-z]+/i)?.[0]?.toLowerCase();
+  if (suffixWord && multipliers[suffixWord]) {
+    return numeric * multipliers[suffixWord];
+  }
+
+  return numeric;
+};
+
+const parsePercentageValue = (value?: string | null): number | null => {
+  if (!value || isValueUnavailable(value)) {
+    return null;
+  }
+
+  const normalized = value.toString().trim().toLowerCase();
+  const match = normalized.match(/-?\d+(\.\d+)?/);
+
+  if (!match) {
+    return null;
+  }
+
+  let numeric = parseFloat(match[0]);
+
+  if (Number.isNaN(numeric)) {
+    return null;
+  }
+
+  if (numeric <= 1 && normalized.includes('0.')) {
+    numeric *= 100;
+  }
+
+  return numeric;
+};
+
+const formatCompactCurrency = (value?: number | null) => {
+  if (value === undefined || value === null || Number.isNaN(value)) {
+    return 'N/A';
+  }
+
+  const absolute = Math.abs(value);
+  if (absolute >= 1_000_000_000_000) {
+    return `${(value / 1_000_000_000_000).toFixed(1).replace(/\.0$/, '')}T`;
+  }
+  if (absolute >= 1_000_000_000) {
+    return `${(value / 1_000_000_000).toFixed(1).replace(/\.0$/, '')}B`;
+  }
+  if (absolute >= 1_000_000) {
+    return `${(value / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
+  }
+  if (absolute >= 1_000) {
+    return `${(value / 1_000).toFixed(1).replace(/\.0$/, '')}K`;
+  }
+
+  return value.toLocaleString();
+};
+
+const truncateLabel = (label: string, limit = 48) => {
+  if (label.length <= limit) {
+    return label;
+  }
+
+  return `${label.slice(0, Math.max(limit - 1, 0))}…`;
+};
+
+const MetricCard = ({ title, value, icon, tooltip }: MetricCardProps) => (
   <Card>
     <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
       <CardTitle className="text-sm font-medium text-muted-foreground">{title}</CardTitle>
@@ -40,12 +193,67 @@ export default function Financials({ data, claims }: { data: FinancialsType, cla
   const [suggestions, setSuggestions] = useState<string[] | undefined | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  
+
+  const projections = Array.isArray(data?.projections) ? data.projections : [];
+  const claimsList = Array.isArray(claims) ? claims : [];
+
+  const recurringRevenueChartData: ChartDatum[] = [];
+  const arrValue = parseFinancialNumber(data?.srr_mrr?.current_booked_arr);
+  if (arrValue !== null) {
+    recurringRevenueChartData.push({
+      name: 'ARR',
+      value: arrValue,
+      display: data?.srr_mrr?.current_booked_arr ?? undefined,
+    });
+  }
+
+  const mrrValue = parseFinancialNumber(data?.srr_mrr?.current_mrr);
+  if (mrrValue !== null) {
+    recurringRevenueChartData.push({
+      name: 'MRR',
+      value: mrrValue,
+      display: data?.srr_mrr?.current_mrr ?? undefined,
+    });
+  }
+
+  const projectionChartData = projections
+    .map((projection): ChartDatum | null => {
+      const numericValue = parseFinancialNumber(projection.revenue);
+      if (numericValue === null) {
+        return null;
+      }
+
+      return {
+        name: projection.year,
+        value: numericValue,
+        display: projection.revenue,
+      };
+    })
+    .filter((value): value is ChartDatum => value !== null);
+
+  const claimsChartData = claimsList
+    .slice(0, 5)
+    .map((claim, index): ChartDatum | null => {
+      const probability = parsePercentageValue(claim.simulated_probability);
+      if (probability === null) {
+        return null;
+      }
+
+      return {
+        name: truncateLabel(claim.claim, 40) || `Claim ${index + 1}`,
+        fullLabel: claim.claim,
+        value: probability,
+        display: claim.simulated_probability,
+      };
+    })
+    .filter((value): value is ChartDatum => value !== null);
+
   const handleGenerateSuggestions = async () => {
     setIsLoading(true);
     setError(null);
     try {
-      const result = await generateFinancialMetricsDashboard({ analysisText: JSON.stringify(data) + JSON.stringify(claims) });
+      const serializedAnalysisInput = JSON.stringify(data ?? {}) + JSON.stringify(claimsList);
+      const result = await generateFinancialMetricsDashboard({ analysisText: serializedAnalysisInput });
       setSuggestions(result.followUpSuggestions);
     } catch (e) {
       setError('Failed to generate suggestions. Please try again.');
@@ -59,69 +267,201 @@ export default function Financials({ data, claims }: { data: FinancialsType, cla
       <div>
         <h2 className="font-headline text-2xl mb-4">Key Metrics</h2>
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          <MetricCard title="ARR" value={data.arr_mrr.current_booked_arr} icon={<BarChart2 className="h-4 w-4 text-muted-foreground" />} />
-          <MetricCard title="MRR" value={data.arr_mrr.current_mrr} icon={<Calendar className="h-4 w-4 text-muted-foreground" />} />
-          <MetricCard title="Est. Burn Rate" value={data.burn_and_runway.implied_net_burn} icon={<HelpCircle className="h-4 w-4 text-muted-foreground" />} tooltip="Estimated by dividing funding ask by runway" />
-          <MetricCard title="Runway" value={data.burn_and_runway.stated_runway} icon={<GitBranch className="h-4 w-4 text-muted-foreground" />} />
+          <MetricCard title="ARR" value={data?.srr_mrr?.current_booked_arr} icon={<BarChart2 className="h-4 w-4 text-muted-foreground" />} />
+          <MetricCard title="MRR" value={data?.srr_mrr?.current_mrr} icon={<Calendar className="h-4 w-4 text-muted-foreground" />} />
+          <MetricCard title="Est. Burn Rate" value={data?.burn_and_runway?.implied_net_burn} icon={<HelpCircle className="h-4 w-4 text-muted-foreground" />} tooltip="Estimated by dividing funding ask by runway" />
+          <MetricCard title="Runway" value={data?.burn_and_runway?.stated_runway} icon={<GitBranch className="h-4 w-4 text-muted-foreground" />} />
         </div>
       </div>
-      
+
       <Card>
         <CardHeader>
-          <CardTitle className="font-headline text-2xl flex items-center gap-3"><PiggyBank className="w-7 h-7 text-primary"/>Funding</CardTitle>
+          <CardTitle className="font-headline text-2xl flex items-center gap-3"><PiggyBank className="w-7 h-7 text-primary" />Funding</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-1">
             <h4 className="font-semibold">Current Ask</h4>
-            <p className="text-xl font-bold font-headline text-primary">{data.burn_and_runway.funding_ask}</p>
+            <p className="text-xl font-bold font-headline text-primary">{data?.burn_and_runway?.funding_ask || 'N/A'}</p>
           </div>
           <div className="space-y-1">
             <h4 className="font-semibold">Valuation Rationale</h4>
-            <p className="text-sm text-muted-foreground">{data.valuation_rationale}</p>
+            <p className="text-sm text-muted-foreground">{data?.valuation_rationale || 'N/A'}</p>
           </div>
           <div className="space-y-1">
             <h4 className="font-semibold">Previous Funding</h4>
-            <p className="text-sm text-muted-foreground">{data.funding_history}</p>
+            <p className="text-sm text-muted-foreground">{data?.funding_history || 'N/A'}</p>
           </div>
         </CardContent>
       </Card>
-      
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+
+      {recurringRevenueChartData.length > 0 && (
         <Card>
           <CardHeader>
-            <CardTitle className="font-headline text-2xl flex items-center gap-3"><BarChart2 className="w-7 h-7 text-primary"/>Financial Projections</CardTitle>
+            <CardTitle className="font-headline text-2xl flex items-center gap-3"><PieChart className="w-7 h-7 text-primary" />Recurring Revenue Mix</CardTitle>
           </CardHeader>
-          <CardContent>
-            <ul className="space-y-2">
-            {data.projections.map((projection) => (
-              <li key={projection.year} className="flex justify-between items-center p-2 rounded-md hover:bg-secondary/50">
-                <span className="font-medium">{projection.year}</span>
-                <span className="font-bold text-lg font-headline text-primary">{projection.revenue}</span>
-              </li>
-            ))}
-            </ul>
+          <CardContent className="h-72">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={recurringRevenueChartData} barSize={48}>
+                <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                <XAxis
+                  dataKey="name"
+                  axisLine={false}
+                  tickLine={false}
+                  tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 12 }}
+                />
+                <YAxis
+                  tickFormatter={(value) => formatCompactCurrency(Number(value))}
+                  axisLine={false}
+                  tickLine={false}
+                  tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 12 }}
+                />
+                <RechartsTooltip
+                  cursor={{ fill: 'rgba(148, 163, 184, 0.08)' }}
+                  formatter={(_, __, payload) => {
+                    const formatted = payload?.payload as ChartDatum | undefined;
+                    return [
+                      formatted?.display ?? formatCompactCurrency(formatted?.value ?? null),
+                      formatted?.name ?? 'Revenue',
+                    ];
+                  }}
+                  contentStyle={{
+                    backgroundColor: 'hsl(var(--background))',
+                    borderRadius: '0.75rem',
+                    border: '1px solid hsl(var(--border))',
+                  }}
+                />
+                <Bar dataKey="value" radius={[12, 12, 0, 0]} fill="hsl(var(--primary))" />
+              </BarChart>
+            </ResponsiveContainer>
           </CardContent>
         </Card>
+      )}
 
-        {claims.map((claim, index) => (
-          <Card key={index}>
-            <CardHeader>
-              <CardTitle className="font-headline text-xl flex items-center gap-3"><Target className="w-6 h-6 text-primary"/>Claim Analysis: {claim.claim}</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="flex justify-between items-center bg-secondary/50 p-4 rounded-lg">
-                  <span className="font-semibold text-lg">Simulated Probability</span>
-                  <span className="text-3xl font-bold font-headline text-accent">{claim.simulated_probability}</span>
-              </div>
-              <div className="space-y-1">
-                <h4 className="font-semibold">Result</h4>
-                <p className="text-sm text-muted-foreground">{claim.result}</p>
-              </div>
-              <p className="text-sm text-muted-foreground"><span className="font-semibold">Analysis Method:</span> {claim.analysis_method}</p>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
+      <Card>
+        <CardHeader>
+          <CardTitle className="font-headline text-2xl flex items-center gap-3"><TrendingUp className="w-7 h-7 text-primary" />Financial Projections</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          {projectionChartData.length > 0 ? (
+            <div className="h-72 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={projectionChartData} margin={{ left: 12, right: 12 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                  <XAxis
+                    dataKey="name"
+                    axisLine={false}
+                    tickLine={false}
+                    tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 12 }}
+                  />
+                  <YAxis
+                    tickFormatter={(value) => formatCompactCurrency(Number(value))}
+                    axisLine={false}
+                    tickLine={false}
+                    tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 12 }}
+                  />
+                  <RechartsTooltip
+                    formatter={(_, __, payload) => {
+                      const formatted = payload?.payload as ChartDatum | undefined;
+                      return [
+                        formatted?.display ?? formatCompactCurrency(formatted?.value ?? null),
+                        'Revenue',
+                      ];
+                    }}
+                    contentStyle={{
+                      backgroundColor: 'hsl(var(--background))',
+                      borderRadius: '0.75rem',
+                      border: '1px solid hsl(var(--border))',
+                    }}
+                  />
+                  <Line type="monotone" dataKey="value" stroke="hsl(var(--primary))" strokeWidth={3} dot={{ r: 4 }} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">Projection charts will appear once numeric revenue estimates are available.</p>
+          )}
+          {projections.length > 0 ? (
+            <ul className="space-y-2">
+              {projections.map((projection) => (
+                <li key={projection.year} className="flex justify-between items-center p-2 rounded-md hover:bg-secondary/50">
+                  <span className="font-medium">{projection.year}</span>
+                  <span className="font-bold text-lg font-headline text-primary">{projection.revenue}</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-sm text-muted-foreground">No financial projections were provided in the memo.</p>
+          )}
+        </CardContent>
+      </Card>
+
+      {claimsChartData.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="font-headline text-2xl flex items-center gap-3"><BarChart2 className="w-7 h-7 text-primary" />Claim Confidence Snapshot</CardTitle>
+          </CardHeader>
+          <CardContent className="h-80">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={claimsChartData} layout="vertical" margin={{ top: 8, bottom: 8, left: 16, right: 16 }}>
+                <CartesianGrid horizontal strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                <XAxis
+                  type="number"
+                  domain={[0, 100]}
+                  axisLine={false}
+                  tickLine={false}
+                  tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 12 }}
+                  tickFormatter={(value) => `${value}%`}
+                />
+                <YAxis
+                  dataKey="name"
+                  type="category"
+                  width={200}
+                  axisLine={false}
+                  tickLine={false}
+                  tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 12 }}
+                />
+                <RechartsTooltip
+                  formatter={(_, __, payload) => {
+                    const formatted = payload?.payload as ChartDatum | undefined;
+                    return [formatted?.display ?? `${formatted?.value?.toFixed(1) ?? '0'}%`, 'Simulated Probability'];
+                  }}
+                  labelFormatter={(_, payload) => (payload?.[0]?.payload as ChartDatum | undefined)?.fullLabel ?? ''}
+                  contentStyle={{
+                    backgroundColor: 'hsl(var(--background))',
+                    borderRadius: '0.75rem',
+                    border: '1px solid hsl(var(--border))',
+                    maxWidth: '22rem',
+                  }}
+                />
+                <Bar dataKey="value" fill="hsl(var(--accent))" radius={[0, 12, 12, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
+      )}
+
+      {claimsList.length > 0 && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+          {claimsList.map((claim, index) => (
+            <Card key={index}>
+              <CardHeader>
+                <CardTitle className="font-headline text-xl flex items-center gap-3"><Target className="w-6 h-6 text-primary" />Claim Analysis: {claim.claim}</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex justify-between items-center bg-secondary/50 p-4 rounded-lg">
+                    <span className="font-semibold text-lg">Simulated Probability</span>
+                    <span className="text-3xl font-bold font-headline text-accent">{claim.simulated_probability}</span>
+                </div>
+                <div className="space-y-1">
+                  <h4 className="font-semibold">Result</h4>
+                  <p className="text-sm text-muted-foreground">{claim.result}</p>
+                </div>
+                <p className="text-sm text-muted-foreground"><span className="font-semibold">Analysis Method:</span> {claim.analysis_method}</p>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
 
       <Card>
         <CardHeader>
