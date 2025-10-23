@@ -44,7 +44,7 @@ const isValueUnavailable = (value?: string | null) => {
     return true;
   }
 
-  return ['n/a', 'na', 'not available', 'none', 'unknown', 'tbd', '-', '—', 'pending'].some((token) =>
+  return ['n/a', 'na', 'not available', 'none', 'unknown', 'tbd', '-', '—', 'pending', 'not applicable'].some((token) =>
     normalized.includes(token),
   );
 };
@@ -170,6 +170,20 @@ type EstimationDatum = {
   baseRevenueDisplay?: string;
   averageContractValue?: number;
   averageContractValueDisplay?: string;
+};
+
+const formatProbabilityDisplay = (value?: string | null): string | null => {
+  const numeric = parsePercentageValue(value);
+
+  if (numeric !== null) {
+    return `${numeric % 1 === 0 ? numeric.toFixed(0) : numeric.toFixed(1)}%`;
+  }
+
+  if (!value || isValueUnavailable(value)) {
+    return null;
+  }
+
+  return value;
 };
 
 const MetricCard = ({ title, value, icon, tooltip }: MetricCardProps) => (
@@ -433,24 +447,34 @@ export default function Financials({ data, claims }: { data: FinancialsType, cla
 
       {claimsList.length > 0 && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          {claimsList.map((claim, index) => (
-            <Card key={index}>
-              <CardHeader>
-                <CardTitle className="font-headline text-xl flex items-center gap-3"><Target className="w-6 h-6 text-primary" />Claim Analysis: {claim.claim}</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex justify-between items-center bg-secondary/50 p-4 rounded-lg">
+          {claimsList.map((claim, index) => {
+            const probabilityDisplay = formatProbabilityDisplay(claim.simulated_probability);
+            return (
+              <Card key={index}>
+                <CardHeader>
+                  <CardTitle className="font-headline text-xl flex items-center gap-3"><Target className="w-6 h-6 text-primary" />Claim Analysis: {claim.claim}</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="flex justify-between items-center bg-secondary/50 p-4 rounded-lg">
                     <span className="font-semibold text-lg">Simulated Probability</span>
-                    <span className="text-3xl font-bold font-headline text-accent">{claim.simulated_probability}</span>
-                </div>
-                <div className="space-y-1">
-                  <h4 className="font-semibold">Result</h4>
-                  <p className="text-sm text-muted-foreground">{claim.result}</p>
-                </div>
-                <p className="text-sm text-muted-foreground"><span className="font-semibold">Analysis Method:</span> {claim.analysis_method}</p>
-              </CardContent>
-            </Card>
-          ))}
+                    <span className="text-3xl font-bold font-headline text-accent">
+                      {probabilityDisplay ?? 'N/A'}
+                    </span>
+                  </div>
+                  {probabilityDisplay === null && (
+                    <p className="text-xs text-muted-foreground">
+                      The model did not return a probability estimate for this claim.
+                    </p>
+                  )}
+                  <div className="space-y-1">
+                    <h4 className="font-semibold">Result</h4>
+                    <p className="text-sm text-muted-foreground">{claim.result}</p>
+                  </div>
+                  <p className="text-sm text-muted-foreground"><span className="font-semibold">Analysis Method:</span> {claim.analysis_method}</p>
+                </CardContent>
+              </Card>
+            );
+          })}
         </div>
       )}
 
