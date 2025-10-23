@@ -15,7 +15,16 @@ logger = logging.getLogger(__name__)
 
 class PublicDataGatherer:
     def __init__(self, search_service=None, summarizer: Optional[GeminiSummarizer] = None):
-        self.search_service = search_service or build("customsearch", "v1", developerKey=settings.GOOGLE_API_KEY)
+        self._local_mode = False
+        try:
+            self.search_service = search_service or build(
+                "customsearch", "v1", developerKey=settings.GOOGLE_API_KEY
+            )
+        except Exception as exc:  # pragma: no cover - external dependency
+            logger.warning("Google Custom Search unavailable (%s); using heuristic public data", exc)
+            self.search_service = None
+            self._local_mode = True
+
         self.summarizer = summarizer or GeminiSummarizer()
 
     async def gather_data(
@@ -27,6 +36,9 @@ class PublicDataGatherer:
     ) -> Dict:
         """Gather public data about company, founder, and market"""
         try:
+            if self._local_mode or not self.search_service:
+                return self._local_fallback(company_name, founder_name, sector, logos)
+
             start_time = time.perf_counter()
 #             data = {}
 
@@ -105,7 +117,7 @@ class PublicDataGatherer:
 
         except Exception as e:
             logger.error(f"Public data gathering error: {str(e)}")
-            return {}
+            return self._local_fallback(company_name, founder_name, sector, logos)
         
     async def _search_founder_profile(self, founder_name: List[str]) -> Dict[str, Any]:
         """Search for founder background information and potential contact emails."""
@@ -268,6 +280,46 @@ class PublicDataGatherer:
                 resolved.append(entry)
 
         return resolved
+
+    def _local_fallback(
+        self,
+        company_name: str,
+        founder_name: List[str],
+        sector: str,
+        logos: Optional[Sequence[str]] = None,
+    ) -> Dict[str, Any]:
+        """Return deterministic heuristic data when Google APIs are unavailable."""
+
+        founders_text = ", ".join(founder_name) if founder_name else "the founding team"
+        sector_text = sector or "the target market"
+        company_display = company_name or "the startup"
+
+        data: Dict[str, Any] = {
+            "founder_profile": (
+                f"Public web search is unavailable in this environment. Known information about {founders_text} "
+                f"has been preserved from the uploaded materials."
+            ),
+            "competitors": [
+                f"Established players in {sector_text}",
+                f"Emerging startups adjacent to {company_display}",
+            ],
+            "market_stats": {
+                "summary": (
+                    f"Indicative market analysis for {sector_text} based on pitch deck context. "
+                    "Consider validating TAM/SAM/CAGR figures externally."
+                )
+            },
+            "news": [
+                f"No live news retrieved; review recent announcements from {company_display}."
+            ],
+        }
+
+        if logos:
+            data["logo_companies"] = [
+                {"logo_text": logo, "company_name": logo, "source": ""} for logo in logos
+            ]
+
+        return data
 
     @staticmethod
     def _build_logo_entry(
@@ -487,6 +539,8 @@ class PublicDataGatherer:
     
     def _perform_search_sync(self, query: str, num_results: int = 5) -> List[Dict]:
         """Perform Google Custom Search with retry + exponential backoff"""
+        if not self.search_service:
+            return []
         max_attempts = 5
         base_delay = 1  # seconds
 
