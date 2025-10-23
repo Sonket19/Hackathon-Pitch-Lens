@@ -19,6 +19,9 @@ from config.settings import settings
 logger = logging.getLogger(__name__)
 
 
+MAX_CONTEXT_LENGTH = 15000
+
+
 DEFAULT_MEMO_TEMPLATE: Dict[str, Any] = {
     "company_overview": {
         "name": "Not available",
@@ -477,6 +480,9 @@ class GeminiSummarizer:
 
             context = self._build_memo_context(metadata, extracted_text, public_data, user_input)
 
+            if len(context) > MAX_CONTEXT_LENGTH:
+                context = context[:MAX_CONTEXT_LENGTH]
+
             prompt = f"""
                 You are an investment analyst. Your task is to generate a structured investment memo for the startup under review.
 
@@ -615,9 +621,10 @@ class GeminiSummarizer:
             if isinstance(text_uri, str) and text_uri:
                 media_inputs.append({"uri": text_uri, "mime_type": "text/plain"})
 
+            media_parts = self._prepare_media_parts(media_inputs)
             raw_response = self._generate_text(
                 prompt,
-                media_parts=self._prepare_media_parts(media_inputs),
+                media_parts=media_parts,
             )
             clean = re.sub(r"^```json\s*|\s*```$", "", raw_response, flags=re.MULTILINE).strip()
 
@@ -625,6 +632,7 @@ class GeminiSummarizer:
                 try:
                     parsed = json.loads(clean)
                     if isinstance(parsed, dict):
+                        parsed = self._fill_financial_placeholders(parsed, context, media_parts)
                         merged = self._merge_with_template(parsed)
                         return self._apply_context_overrides(
                             merged,
@@ -637,7 +645,8 @@ class GeminiSummarizer:
                         "Gemini memo response was not valid JSON; falling back to default template.",
                     )
 
-            fallback = self._merge_with_template({})
+            fallback_seed = self._fill_financial_placeholders({}, context, media_parts)
+            fallback = self._merge_with_template(fallback_seed)
             contextualised = self._apply_context_overrides(
                 fallback,
                 metadata,
@@ -750,6 +759,180 @@ class GeminiSummarizer:
 
         _deep_update(merged, payload)
         return merged
+
+    def _collect_missing_financial_fields(
+        self, payload: Dict[str, Any]
+    ) -> Tuple[Dict[str, Any], List[str]]:
+        missing_structure: Dict[str, Any] = {}
+        missing_paths: List[str] = []
+
+        financials = payload.get("financials")
+        if not isinstance(financials, dict):
+            missing_structure = {
+                "funding_history": "",
+                "valuation_rationale": "",
+                "projections": [{"year": "", "revenue": ""}],
+                "srr_mrr": {"current_booked_arr": "", "current_mrr": ""},
+                "burn_and_runway": {
+                    "funding_ask": "",
+                    "stated_runway": "",
+                    "implied_net_burn": "",
+                },
+            }
+            missing_paths.extend(
+                [
+                    "financials.funding_history",
+                    "financials.valuation_rationale",
+                    "financials.projections",
+                    "financials.srr_mrr.current_booked_arr",
+                    "financials.srr_mrr.current_mrr",
+                    "financials.burn_and_runway.funding_ask",
+                    "financials.burn_and_runway.stated_runway",
+                    "financials.burn_and_runway.implied_net_burn",
+                ]
+            )
+            return missing_structure, missing_paths
+
+        def _mark_missing(
+            container: Dict[str, Any],
+            key: str,
+            placeholder: Any,
+            path: str,
+        ) -> None:
+            value = container.get(key)
+            if key not in missing_structure and self._is_placeholder(value):
+                missing_structure[key] = placeholder
+                missing_paths.append(path)
+
+        _mark_missing(financials, "funding_history", "", "financials.funding_history")
+        _mark_missing(financials, "valuation_rationale", "", "financials.valuation_rationale")
+
+        projections_value = financials.get("projections")
+        if self._is_placeholder(projections_value):
+            missing_structure["projections"] = [{"year": "", "revenue": ""}]
+            missing_paths.append("financials.projections")
+
+        srr_mrr_value = financials.get("srr_mrr")
+        srr_missing: Dict[str, Any] = {}
+        srr_paths: List[str] = []
+        if not isinstance(srr_mrr_value, dict):
+            srr_missing = {"current_booked_arr": "", "current_mrr": ""}
+            srr_paths.extend(
+                [
+                    "financials.srr_mrr.current_booked_arr",
+                    "financials.srr_mrr.current_mrr",
+                ]
+            )
+        else:
+            if self._is_placeholder(srr_mrr_value.get("current_booked_arr")):
+                srr_missing["current_booked_arr"] = ""
+                srr_paths.append("financials.srr_mrr.current_booked_arr")
+            if self._is_placeholder(srr_mrr_value.get("current_mrr")):
+                srr_missing["current_mrr"] = ""
+                srr_paths.append("financials.srr_mrr.current_mrr")
+
+        if srr_missing:
+            missing_structure["srr_mrr"] = srr_missing
+            missing_paths.extend(srr_paths)
+
+        burn_value = financials.get("burn_and_runway")
+        burn_missing: Dict[str, Any] = {}
+        if not isinstance(burn_value, dict):
+            burn_missing = {
+                "funding_ask": "",
+                "stated_runway": "",
+                "implied_net_burn": "",
+            }
+        else:
+            for key in ("funding_ask", "stated_runway", "implied_net_burn"):
+                if self._is_placeholder(burn_value.get(key)):
+                    burn_missing[key] = ""
+                    missing_paths.append(f"financials.burn_and_runway.{key}")
+
+        if burn_missing:
+            missing_structure["burn_and_runway"] = burn_missing
+
+        # Deduplicate missing paths while preserving order
+        seen_paths: set[str] = set()
+        unique_paths: List[str] = []
+        for item in missing_paths:
+            if item in seen_paths:
+                continue
+            seen_paths.add(item)
+            unique_paths.append(item)
+
+        return missing_structure, unique_paths
+
+    def _fill_financial_placeholders(
+        self,
+        payload: Dict[str, Any],
+        context: str,
+        media_parts: Optional[List[Part]],
+    ) -> Dict[str, Any]:
+        missing_structure, missing_paths = self._collect_missing_financial_fields(payload)
+        if not missing_paths:
+            return payload
+
+        prompt_structure = json.dumps({"financials": missing_structure}, indent=2)
+        fields_list = ", ".join(missing_paths)
+
+        followup_prompt = (
+            "You previously drafted an investment memo but some financial fields were left blank.\n"
+            "Fill ONLY the missing fields listed below using the startup materials provided.\n"
+            "If a field is truly absent from the materials, respond with 'Not available'.\n"
+            "Return strict JSON matching the structure.\n\n"
+            f"Missing fields: {fields_list}\n\n"
+            "Startup materials:\n"
+            f"{context}\n\n"
+            "JSON structure to populate:\n"
+            f"{prompt_structure}\n"
+        )
+
+        followup_raw = self._generate_text(followup_prompt, media_parts=media_parts)
+        followup_clean = self._strip_json_fences(followup_raw)
+
+        if not followup_clean:
+            return payload
+
+        try:
+            parsed = json.loads(followup_clean)
+        except json.JSONDecodeError:
+            logger.warning("Financial follow-up response was not valid JSON")
+            return payload
+
+        if not isinstance(parsed, dict):
+            return payload
+
+        updates = parsed.get("financials") if isinstance(parsed.get("financials"), dict) else parsed
+        if not isinstance(updates, dict):
+            return payload
+
+        financial_section = payload.setdefault("financials", {})
+
+        def _merge_missing(target: Dict[str, Any], update_payload: Dict[str, Any]) -> None:
+            for key, value in update_payload.items():
+                if isinstance(value, dict):
+                    nested_target = target.get(key)
+                    if not isinstance(nested_target, dict):
+                        nested_target = {}
+                    _merge_missing(nested_target, value)
+                    if nested_target and not self._is_placeholder(nested_target):
+                        target[key] = nested_target
+                    elif key not in target:
+                        target[key] = nested_target
+                elif isinstance(value, list):
+                    if value and not self._is_placeholder(value):
+                        target[key] = value
+                else:
+                    if not self._is_placeholder(value):
+                        existing_value = target.get(key)
+                        if self._is_placeholder(existing_value):
+                            target[key] = value
+                        elif key not in target:
+                            target[key] = value
+
+        _merge_missing(financial_section, updates)
+        return payload
 
     @staticmethod
     def _is_placeholder(value: Any) -> bool:
@@ -1046,16 +1229,40 @@ class GeminiSummarizer:
                     return match.group(0).strip()
             return None
 
-        currency_pattern = r"([\$₹€£]?\s?\d[\d,\.]*\s?(?:k|m|b|mn|bn|million|billion|crore|crores|lakh|lakhs)?\s?(?:usd|inr|sgd|eur|cad|aud|gbp)?)"
+        currency_pattern = (
+            r"([\$₹€£]?\s?(?:~|≈)?\s?\d[\d,\.]*\s?"
+            r"(?:k|m|b|mn|bn|million|billion|crore|crores|cr|crs|lakh|lakhs|lc)?\s?"
+            r"(?:usd|inr|sgd|eur|cad|aud|gbp|rs)?"
+            r")"
+        )
 
         metrics_map = {
-            "current_booked_arr": [rf"\barr\b[^\n]*{currency_pattern}", rf"annual recurring revenue[^\n]*{currency_pattern}"],
-            "current_mrr": [rf"\bmrr\b[^\n]*{currency_pattern}", rf"monthly recurring revenue[^\n]*{currency_pattern}"],
-            "funding_ask": [rf"(?:funding ask|raising|seeking)[^\n]*{currency_pattern}", rf"raise(?:s|d)?[^\n]*{currency_pattern}"],
-            "stated_runway": [r"runway[^\n]*(\d+\s*(?:months?|mos?|years?|yrs?))"],
-            "implied_net_burn": [rf"(?:burn rate|net burn)[^\n]*{currency_pattern}"],
-            "funding_history": [r"(?:raised|secured|closed)[^\n]+"],
-            "valuation_rationale": [r"valuation[^\n]+"],
+            "current_booked_arr": [
+                rf"\bbooked\s+arr[^\n:=]*[:=\-–]?\s*{currency_pattern}",
+                rf"\barr\b[^\n]*[:=\-–]\s*{currency_pattern}",
+                rf"annual recurring revenue[^\n]*{currency_pattern}",
+            ],
+            "current_mrr": [
+                rf"\bmrr\b[^\n]*[:=\-–]\s*{currency_pattern}",
+                rf"monthly recurring revenue[^\n]*{currency_pattern}",
+            ],
+            "funding_ask": [
+                rf"(?:funding ask|seeking|raising|raise)[^\n]*[:=\-–]?\s*{currency_pattern}",
+            ],
+            "stated_runway": [
+                r"runway[^\n]*(\d+\s*(?:months?|mos?|years?|yrs?))",
+                r"runway[^\n]*(?:of|for)\s*(\d+\s*(?:months?|mos?|years?|yrs?))",
+            ],
+            "implied_net_burn": [
+                rf"(?:burn rate|net burn)[^\n]*[:=\-–]?\s*{currency_pattern}",
+            ],
+            "funding_history": [
+                r"(?:raised|secured|closed)[^\n]+(?:round|funding|investment)[^\n]*",
+            ],
+            "valuation_rationale": [
+                r"valuation[^\n]+",
+                rf"valued[^\n]*[:=\-–]?\s*{currency_pattern}",
+            ],
         }
 
         for key, patterns in metrics_map.items():
@@ -1066,18 +1273,22 @@ class GeminiSummarizer:
         projections: List[Dict[str, str]] = []
         seen_years: set[str] = set()
         projection_pattern = re.compile(r"(20\d{2})[^\n]*" + currency_pattern, re.IGNORECASE)
+        fy_projection_pattern = re.compile(r"(FY(?:20)?\d{2})[^\n]*" + currency_pattern, re.IGNORECASE)
         for line in page_lines:
             match = projection_pattern.search(line)
+            if not match:
+                match = fy_projection_pattern.search(line)
             if not match:
                 continue
             year = match.group(1)
             revenue = match.group(2)
             if not year or not revenue:
                 continue
-            if year in seen_years:
+            normalized_year = year.upper()
+            if normalized_year in seen_years:
                 continue
-            seen_years.add(year)
-            projections.append({"year": year, "revenue": revenue.strip()})
+            seen_years.add(normalized_year)
+            projections.append({"year": normalized_year, "revenue": revenue.strip()})
 
         if projections:
             metrics["projections"] = projections
