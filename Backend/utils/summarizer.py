@@ -1,29 +1,53 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Sequence
 
 import vertexai
-from vertexai.preview.generative_models import GenerationConfig, GenerativeModel
+from vertexai.preview.generative_models import (
+    Content,
+    GenerationConfig,
+    GenerativeModel,
+    Part,
+)
 
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
 
+def _ensure_vertex_initialised() -> None:
+    """Initialise Vertex AI once per process."""
+
+    try:
+        vertexai.init(project=settings.GCP_PROJECT_ID, location=settings.GCP_LOCATION)
+    except ValueError:  # pragma: no cover - vertexai raises if already initialised
+        logger.debug("Vertex AI initialisation may have already occurred", exc_info=True)
+
+
 class GeminiSummarizer:
     """Wrapper around Gemini with deterministic defaults and parsing helpers."""
 
     def __init__(self) -> None:
-        vertexai.init(project=settings.GCP_PROJECT_ID, location=settings.GCP_LOCATION)
+        _ensure_vertex_initialised()
         self.model = GenerativeModel("gemini-2.5-pro")
         # Force deterministic behaviour so repeated uploads stay consistent.
         self._generation_config = GenerationConfig(
             temperature=0.0,
             top_p=1.0,
             top_k=1,
+        )
+
+        # Multimodal audio/video model for transcripts and tonal analysis.
+        self._media_model = GenerativeModel("gemini-1.5-pro")
+        self._media_config = GenerationConfig(
+            temperature=0.2,
+            top_p=0.9,
+            top_k=32,
+            max_output_tokens=4096,
         )
 
     def _generate_text(self, prompt: str) -> str:
@@ -33,6 +57,20 @@ class GeminiSummarizer:
         )
         text = getattr(response, "text", "")
         return text.strip() if isinstance(text, str) else ""
+
+    def _generate_multimodal(
+        self,
+        contents: Sequence[Content | str | Part],
+        *,
+        generation_config: Optional[GenerationConfig] = None,
+        model: Optional[GenerativeModel] = None,
+    ):
+        active_model = model or self.model
+        config = generation_config or self._generation_config
+        return active_model.generate_content(
+            list(contents),
+            generation_config=config,
+        )
 
     def generate_text(self, prompt: str) -> str:
         """Public wrapper for deterministic text generation."""
@@ -136,27 +174,44 @@ class GeminiSummarizer:
             "product_name_response": product_name_response,
         }
 
-    async def summarize_pitch_deck(self, full_text: str) -> Dict[str, Any]:
+    async def summarize_pitch_deck(
+        self,
+        full_text: str,
+        *,
+        gcs_uri: Optional[str] = None,
+        mime_type: str = "application/pdf",
+    ) -> Dict[str, Any]:
         """Summarize pitch deck into structured sections."""
         try:
             prompt = (
-                "You are processing a startup pitch deck. Read the content below and return a JSON object with the following keys:\n"
-                '- "summary": concise overall summary (string)\n'
-                '- "founders": array of founder names (strings only)\n'
-                '- "sector": specific industry or sector (string)\n'
-                '- "company_name": organization or legal company name (string)\n'
-                '- "product_name": primary product/solution or brand being pitched (string, may be empty)\n\n'
-                "Pitch deck content:\n"
-                f"{full_text}\n\n"
-                "Requirements:\n"
-                "- The JSON must be valid and parsable with standard libraries.\n"
-                '- If only a product or brand name is mentioned, put it in both "company_name" and "product_name".\n'
-                '- If both company and product are mentioned, ensure the company/legal entity goes in "company_name" and the flagship product/solution goes in "product_name".\n'
-                '- Trim whitespace from values and avoid commentary.\n'
-                '- When unsure, leave the value as an empty string "".'
+                "You are processing a startup pitch deck. Review the attached deck as well as the OCR text to produce a structured JSON summary.\n"
+                "Tasks:\n"
+                "1. Extract the company name, primary product name, founders, and sector.\n"
+                "2. Derive a concise narrative summary that references key traction and go-to-market details.\n"
+                "3. Examine charts, tables, and financial slides to pull out ARR/MRR, growth, fundraising, or unit economics figures explicitly.\n"
+                "4. Evaluate slide design, visual polish, and information architecture to infer the business maturity stage (mention this in the summary).\n"
+                "5. Return valid JSON with keys: summary, founders (array), sector, company_name, product_name.\n"
+                "   - Mention visual maturity observations in the summary string.\n"
+                "   - If a value is unknown, use an empty string or empty array.\n"
             )
 
-            structured_raw = self._generate_text(prompt)
+            contents: List[Content | str | Part] = []
+            if gcs_uri:
+                contents.append(Part.from_uri(gcs_uri, mime_type=mime_type))
+
+            ocr_section = (
+                "OCR_TEXT_START\n"
+                f"{full_text}\n"
+                "OCR_TEXT_END"
+            )
+            contents.append(prompt + "\n\n" + ocr_section)
+
+            structured_response = await asyncio.to_thread(
+                self._generate_multimodal,
+                contents,
+            )
+
+            structured_raw = self._extract_text(structured_response)
             structured_clean = self._strip_json_fences(structured_raw)
 
             try:
@@ -175,7 +230,7 @@ class GeminiSummarizer:
 
             if not summary_text:
                 summary_text = self._generate_text(
-                    "Provide a concise summary of the following pitch deck in under 160 words:\n"
+                    "Provide a concise summary of the following pitch deck in under 160 words, mentioning visual maturity signals:\n"
                     f"{full_text}"
                 )
 
@@ -222,6 +277,76 @@ class GeminiSummarizer:
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.error("Audio summarization error: %s", exc)
             return "Error processing audio transcript"
+
+    async def analyze_media_from_gcs(self, gcs_uri: str, *, mime_type: str) -> Dict[str, Any]:
+        """Leverage Gemini 1.5 Pro to analyse raw audio or video directly from GCS."""
+
+        def _call() -> Dict[str, Any]:
+            prompt = (
+                "You are analysing an investor pitch recording.\n"
+                "Return a JSON object with the following keys:\n"
+                "- transcript: succinct transcript capturing the narrative (<= 1200 words).\n"
+                "- summary: concise prose summary tailored for investors.\n"
+                "- tone_analysis: short description of speaker tone and pacing.\n"
+                "- pacing_observations: any pacing or delivery notes.\n"
+                "- notable_quotes: array of short impactful quotes if available.\n"
+                "Ensure the JSON is valid and omit commentary outside the object."
+            )
+
+            response = self._generate_multimodal(
+                [Part.from_uri(gcs_uri, mime_type=mime_type), prompt],
+                generation_config=self._media_config,
+                model=self._media_model,
+            )
+            raw_text = self._extract_text(response)
+            cleaned = self._strip_json_fences(raw_text)
+            return json.loads(cleaned) if cleaned else {}
+
+        try:
+            payload = await asyncio.to_thread(_call)
+        except json.JSONDecodeError as exc:  # pragma: no cover - guard unexpected formats
+            logger.error("Failed to decode media analysis payload: {0}".format(exc))
+            payload = {}
+        except Exception as exc:  # pragma: no cover - network/service error resilience
+            logger.error("Media analysis error: %s", exc)
+            payload = {}
+
+        transcript = str(payload.get("transcript", "")).strip()
+        summary = str(payload.get("summary", "")).strip()
+        tone = str(payload.get("tone_analysis", "")).strip()
+        pacing = str(payload.get("pacing_observations", "")).strip()
+        quotes = payload.get("notable_quotes") if isinstance(payload.get("notable_quotes"), list) else []
+
+        return {
+            "raw": transcript,
+            "concise": {
+                "summary": summary,
+                "tone_analysis": tone,
+                "pacing_observations": pacing,
+                "notable_quotes": quotes,
+            },
+        }
+
+    @staticmethod
+    def _extract_text(response: Any) -> str:
+        text = getattr(response, "text", "")
+        if isinstance(text, str) and text.strip():
+            return text
+
+        candidates = getattr(response, "candidates", None)
+        if not candidates:
+            return text if isinstance(text, str) else ""
+
+        chunks: List[str] = []
+        for candidate in candidates:
+            content = getattr(candidate, "content", None)
+            parts = getattr(content, "parts", []) if content else []
+            for part in parts:
+                part_text = getattr(part, "text", None)
+                if isinstance(part_text, str):
+                    chunks.append(part_text)
+        joined = "".join(chunks)
+        return joined or (text if isinstance(text, str) else "")
 
     async def generate_memo(self, deal_data: Dict[str, Any], weightage: Dict[str, Any]) -> Dict[str, Any]:
         """Generate complete investment memo."""

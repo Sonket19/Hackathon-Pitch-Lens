@@ -1,6 +1,7 @@
 from fastapi import Body, BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+import asyncio
 import io
 import logging
 import os
@@ -214,7 +215,39 @@ async def interview_chat(request: ChatRequest) -> ChatResponse:
 
     try:
         history_payload = [message.model_dump() for message in request.history]
-        reply = await chat_agent.generate_response(request.analysis_data, history_payload)
+        contents = chat_agent.build_initial_contents(request.analysis_data, history_payload)
+
+        response = await asyncio.to_thread(
+            chat_agent.model.generate_content,
+            contents,
+            generation_config=chat_agent.config,
+        )
+
+        tool_calls = chat_agent.extract_function_calls(response)
+        iteration = 0
+        while tool_calls and iteration < 3:
+            iteration += 1
+            for call in tool_calls:
+                tool_result = await chat_agent.execute_tool(call)
+                chat_agent.append_tool_interaction(contents, call, tool_result)
+
+            response = await asyncio.to_thread(
+                chat_agent.model.generate_content,
+                contents,
+                generation_config=chat_agent.config,
+            )
+            tool_calls = chat_agent.extract_function_calls(response)
+
+        if tool_calls:
+            logger.warning("Gemini returned unresolved tool calls after maximum retries")
+
+        reply = chat_agent.format_response(response)
+        if not reply.strip():
+            reply = (
+                "I wasn't able to retrieve a grounded answer right now. "
+                "Please try again once the analysis finishes processing."
+            )
+
         return ChatResponse(message=reply)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

@@ -51,7 +51,11 @@ class PDFProcessor:
 
             # print("full_text:",full_text)
             summary_start = time.perf_counter()
-            concise_summary = await self.summarizer.summarize_pitch_deck(full_text)
+            concise_summary = await self.summarizer.summarize_pitch_deck(
+                full_text,
+                gcs_uri=gcs_path,
+                mime_type="application/pdf",
+            )
             summary_duration = time.perf_counter() - summary_start
             # {"summary_res": response.text,
             #        "founder_response": founder_response,
