@@ -152,6 +152,9 @@ export type AnalysisData = {
   memo: Memo;
   raw_files: {
     pitch_deck_url: string;
+    video_pitch_deck_url?: string;
+    audio_pitch_deck_url?: string;
+    text_pitch_deck_url?: string;
   };
   extracted_text: any;
   metadata: Metadata;
