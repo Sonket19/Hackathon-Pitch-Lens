@@ -33,7 +33,11 @@ class GeminiSummarizer:
 
     def _generate_text(self, prompt: str, media_parts: Optional[List[Part]] = None) -> str:
         if media_parts:
-            content: Union[str, List[Union[str, Part]]] = [prompt, *media_parts]
+            try:
+                prompt_part: Union[str, Part] = Part.from_text(prompt)  # type: ignore[attr-defined]
+                content: List[Union[str, Part]] = [prompt_part, *media_parts]
+            except AttributeError:
+                content = [prompt, *media_parts]
         else:
             content = prompt
 
@@ -513,7 +517,29 @@ class GeminiSummarizer:
                 {context}
             """
 
-            raw_response = self._generate_text(prompt)
+            raw_files = deal_data.get("raw_files", {})
+            media_inputs: List[Union[str, Tuple[Any, str], Dict[str, Any], bytes, bytearray]] = []
+
+            pitch_deck_uri = raw_files.get("pitch_deck_url") if isinstance(raw_files, dict) else None
+            if isinstance(pitch_deck_uri, str) and pitch_deck_uri:
+                media_inputs.append({"uri": pitch_deck_uri, "mime_type": "application/pdf"})
+
+            video_uri = raw_files.get("video_pitch_deck_url") if isinstance(raw_files, dict) else None
+            if isinstance(video_uri, str) and video_uri:
+                media_inputs.append({"uri": video_uri, "mime_type": "video/mp4"})
+
+            audio_uri = raw_files.get("audio_pitch_deck_url") if isinstance(raw_files, dict) else None
+            if isinstance(audio_uri, str) and audio_uri:
+                media_inputs.append({"uri": audio_uri, "mime_type": "audio/mpeg"})
+
+            text_uri = raw_files.get("text_pitch_deck_url") if isinstance(raw_files, dict) else None
+            if isinstance(text_uri, str) and text_uri:
+                media_inputs.append({"uri": text_uri, "mime_type": "text/plain"})
+
+            raw_response = self._generate_text(
+                prompt,
+                media_parts=self._prepare_media_parts(media_inputs),
+            )
             clean = re.sub(r"^```json\s*|\s*```$", "", raw_response, flags=re.MULTILINE).strip()
             try:
                 return json.loads(clean) if clean else {}
@@ -548,6 +574,35 @@ class GeminiSummarizer:
             if concise:
                 context_parts.append("Pitch Deck Analysis:")
                 context_parts.append(str(concise))
+
+            raw_pages = pitch_deck.get("raw")
+            if isinstance(raw_pages, dict) and raw_pages:
+                numeric_snippets: List[str] = []
+                seen_snippets: set[str] = set()
+                sorted_pages = sorted(raw_pages.items(), key=lambda item: item[0])
+                for page_label, page_text in sorted_pages:
+                    if not isinstance(page_text, str):
+                        continue
+                    for line in page_text.splitlines():
+                        normalized = line.strip()
+                        if not normalized:
+                            continue
+                        if not re.search(r"\d", normalized):
+                            continue
+                        key = normalized.lower()
+                        if key in seen_snippets:
+                            continue
+                        seen_snippets.add(key)
+                        snippet = f"Page {page_label}: {normalized}"
+                        numeric_snippets.append(snippet[:300])
+                        if len(numeric_snippets) >= 40:
+                            break
+                    if len(numeric_snippets) >= 40:
+                        break
+
+                if numeric_snippets:
+                    context_parts.append("Key numeric snippets from pitch deck (page: detail):")
+                    context_parts.extend(numeric_snippets)
 
         # Media summaries
         for media_type in ("voice_pitch", "video_pitch"):
