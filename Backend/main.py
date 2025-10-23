@@ -72,6 +72,76 @@ memo_exporter = MemoExporter()
 firestore_manager = FirestoreManager()
 chat_agent = StartupChatAgent()
 
+
+def _normalise_cached_summary(payload: Any) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+
+    normalised: Dict[str, Any] = dict(payload)
+
+    concise = normalised.get("concise")
+    if not isinstance(concise, str) or not concise.strip():
+        summary_res = normalised.get("summary_res")
+        if isinstance(summary_res, str) and summary_res.strip():
+            normalised["concise"] = summary_res.strip()
+
+    # Legacy cache keys
+    key_aliases = {
+        "company_name_response": ["company_name", "company"],
+        "product_name_response": ["product_name", "product"],
+        "sector_response": ["sector", "industry"],
+        "founder_response": ["founders", "founder_names", "founder"]
+    }
+
+    for canonical_key, aliases in key_aliases.items():
+        value = normalised.get(canonical_key)
+        if value:
+            continue
+        for alias in aliases:
+            alias_value = normalised.get(alias)
+            if alias_value:
+                normalised[canonical_key] = alias_value
+                break
+
+    founder_value = normalised.get("founder_response", [])
+    if isinstance(founder_value, list):
+        normalised["founder_response"] = [
+            str(item).strip() for item in founder_value if str(item).strip()
+        ]
+    elif isinstance(founder_value, str) and founder_value.strip():
+        normalised["founder_response"] = [
+            part.strip("-• \t")
+            for part in founder_value.splitlines()
+            if part.strip("-• \t")
+        ]
+    else:
+        normalised["founder_response"] = []
+
+    for key in ("company_name_response", "product_name_response", "sector_response", "concise"):
+        value = normalised.get(key)
+        normalised[key] = value.strip() if isinstance(value, str) else (value or "")
+
+    return normalised
+
+
+def _cached_summary_has_required_fields(summary: Dict[str, Any]) -> bool:
+    if not summary.get("concise"):
+        return False
+
+    company_present = bool(summary.get("company_name_response"))
+    product_present = bool(summary.get("product_name_response"))
+    sector_present = bool(summary.get("sector_response"))
+
+    # Founder names can legitimately be empty, but if we lose company/product/sector
+    # context we must re-run the deck to avoid empty metadata downstream.
+    if not (company_present or product_present):
+        return False
+
+    if not sector_present:
+        return False
+
+    return True
+
 # ---------- Endpoints ----------
 
 @app.get("/")
@@ -240,20 +310,47 @@ async def process_deal(deal_id: str, file_urls: dict, deck_hash: Optional[str] =
             deck_hash = metadata_snapshot.get('deck_hash')
         cache_bundle = await firestore_manager.get_cached_deck(deck_hash)
 
-        cache_hit = bool(cache_bundle and cache_bundle.get('summary'))
-        if cache_hit:
-            logger.info("Reusing cached analysis for deal %s (hash %s)", deal_id, deck_hash)
-            temp_res = cache_bundle.get('summary', {}) or {}
-            extracted_text = cache_bundle.get('extracted_text', {}) or {}
-            public_data = cache_bundle.get('public_data', {}) or {}
-            stage_timings['cache_hit'] = True
+        cache_hit = False
+        if isinstance(cache_bundle, dict) and cache_bundle:
+            cached_summary = cache_bundle.get('summary')
+            if isinstance(cached_summary, dict) and cached_summary:
+                temp_res = _normalise_cached_summary(cached_summary)
 
-            if 'pitch_deck' not in extracted_text:
-                logger.info("Cached payload missing raw pitch deck for deal %s; reprocessing", deal_id)
-                cache_hit = False
-                temp_res = {}
-                extracted_text = {}
-                public_data = {}
+                extracted_payload = cache_bundle.get('extracted_text')
+                extracted_text = dict(extracted_payload) if isinstance(extracted_payload, dict) else {}
+                public_payload = cache_bundle.get('public_data')
+                public_data = dict(public_payload) if isinstance(public_payload, dict) else {}
+
+                cache_hit = True
+                stage_timings['cache_hit'] = True
+                logger.info("Reusing cached analysis for deal %s (hash %s)", deal_id, deck_hash)
+
+                if 'pitch_deck' not in extracted_text:
+                    logger.info(
+                        "Cached payload missing raw pitch deck for deal %s; reprocessing",
+                        deal_id,
+                    )
+                    cache_hit = False
+                    stage_timings.pop('cache_hit', None)
+                    temp_res = {}
+                    extracted_text = {}
+                    public_data = {}
+                elif not _cached_summary_has_required_fields(temp_res):
+                    logger.info(
+                        "Cached summary for deal %s (hash %s) missing required fields; reprocessing",
+                        deal_id,
+                        deck_hash,
+                    )
+                    cache_hit = False
+                    stage_timings.pop('cache_hit', None)
+                    temp_res = {}
+                    extracted_text = {}
+                    public_data = {}
+            elif cached_summary is not None:
+                logger.info(
+                    "Ignoring legacy cached deck for hash %s due to incompatible summary payload",
+                    deck_hash,
+                )
 
         logos_detected: List[str] = []
 
