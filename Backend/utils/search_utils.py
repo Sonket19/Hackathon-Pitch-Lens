@@ -4,6 +4,7 @@ import re
 import logging
 from config.settings import settings
 from utils.summarizer import GeminiSummarizer
+from utils.grounding import GroundedKnowledgeAgent
 from utils.email_utils import extract_emails
 import asyncio
 import time
@@ -14,9 +15,15 @@ from concurrent.futures import TimeoutError as FuturesTimeoutError
 logger = logging.getLogger(__name__)
 
 class PublicDataGatherer:
-    def __init__(self, search_service=None, summarizer: Optional[GeminiSummarizer] = None):
+    def __init__(
+        self,
+        search_service=None,
+        summarizer: Optional[GeminiSummarizer] = None,
+        grounded_agent: Optional[GroundedKnowledgeAgent] = None,
+    ):
         self.search_service = search_service or build("customsearch", "v1", developerKey=settings.GOOGLE_API_KEY)
         self.summarizer = summarizer or GeminiSummarizer()
+        self.grounded_agent = grounded_agent or GroundedKnowledgeAgent()
 
     async def gather_data(
         self,
@@ -53,8 +60,7 @@ class PublicDataGatherer:
 
             tasks = [
                 self._search_founder_profile(founder_name),
-                self._search_competitors(company_name, sector),
-                self._search_market_data(sector),
+                self._gather_grounded_market_snapshot(company_name, sector, founder_name),
                 self._search_news(company_name, founder_name),
             ]
 
@@ -78,22 +84,59 @@ class PublicDataGatherer:
                 founder_summary = str(founder_result) if founder_result is not None else "No public information found"
                 founder_contacts = {}
 
+            grounded_result = results[1] if len(results) > 1 else {}
+            grounded_market: Dict[str, Any]
+            grounded_competitors: List[Dict[str, Any]]
+            grounded_news: List[Dict[str, Any]]
+            if isinstance(grounded_result, Exception):
+                grounded_market = {}
+                grounded_competitors = []
+                grounded_news = []
+            elif isinstance(grounded_result, dict):
+                grounded_market = grounded_result.get('market_stats') or {}
+                grounded_competitors = grounded_result.get('competitors') or []
+                grounded_news = grounded_result.get('recent_news') or []
+            else:
+                grounded_market = {}
+                grounded_competitors = []
+                grounded_news = []
+
+            # News search result (fallback to CSE if grounding lacks coverage)
+            news_index = 2
+            news_payload = grounded_news
+            news_result = results[news_index] if len(results) > news_index else []
+            if isinstance(news_result, Exception):
+                logger.debug("Grounded news fallback due to error: %s", news_result)
+            elif isinstance(news_result, list) and news_result:
+                # Combine grounded headlines with Google results when available
+                news_payload = grounded_news or news_result
+            elif not grounded_news and isinstance(news_result, dict):
+                news_payload = [news_result]
+
             data: Dict[str, Any] = {
                 'founder_profile': founder_summary,
-                'competitors': results[1] if not isinstance(results[1], Exception) else [],
-                'market_stats': results[2] if not isinstance(results[2], Exception) else {},
-                'news': results[3] if not isinstance(results[3], Exception) else []
+                'competitors': grounded_competitors,
+                'market_stats': grounded_market,
+                'news': news_payload,
             }
 
             if founder_contacts:
                 data['founder_contacts'] = founder_contacts
 
             if logo_inputs:
-                logo_index = 4
+                logo_index = 3
                 if len(results) > logo_index and not isinstance(results[logo_index], Exception):
                     data['logo_companies'] = results[logo_index]
                 else:
                     data['logo_companies'] = []
+
+            if not data['competitors']:
+                competitor_fallback = await self._search_competitors(company_name, sector)
+                data['competitors'] = competitor_fallback
+
+            if not data['market_stats']:
+                market_fallback = await self._search_market_data(sector)
+                data['market_stats'] = market_fallback
 
             logger.info(
                 "Public data gathering for %s completed in %.3fs",
@@ -163,6 +206,29 @@ class PublicDataGatherer:
                 'summary': "Error gathering founder information",
                 'contacts': {},
                 'results': [],
+            }
+
+    async def _gather_grounded_market_snapshot(
+        self,
+        company_name: str,
+        sector: str,
+        founder_names: List[str],
+    ) -> Dict[str, Any]:
+        """Leverage Vertex grounding to obtain market sizing, competitor, and news intel."""
+
+        try:
+            return await asyncio.to_thread(
+                self.grounded_agent.market_intel_snapshot,
+                company_name,
+                sector,
+                founder_names=founder_names,
+            )
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.warning("Grounded market snapshot failed: %s", exc)
+            return {
+                'market_stats': {},
+                'competitors': [],
+                'recent_news': [],
             }
 
     async def _search_competitors(self, company_name: str, sector: str) -> List[str]:

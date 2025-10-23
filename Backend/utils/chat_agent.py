@@ -4,12 +4,25 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Any, Dict, Iterable, List, Optional
 
 import vertexai
-from vertexai.preview.generative_models import GenerationConfig, GenerativeModel
+from google.cloud import bigquery
+from vertexai.preview.generative_models import (
+    FunctionDeclaration,
+    GenerationConfig,
+    GenerativeModel,
+    Part,
+    Tool,
+    ToolConfig,
+)
 
 from config.settings import settings
+from utils.grounding import GroundedKnowledgeAgent
+
+
+logger = logging.getLogger(__name__)
 
 
 class StartupChatAgent:
@@ -24,6 +37,39 @@ class StartupChatAgent:
             top_k=64,
             max_output_tokens=2048,
         )
+        self._grounding_agent = GroundedKnowledgeAgent()
+        self._tools: List[Tool] = list(self._grounding_agent.tools or [])
+        self._peer_function = FunctionDeclaration(
+            name="search_peer_data",
+            description="Query the memo warehouse for peer benchmarks in a given sector.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "sector": {
+                        "type": "string",
+                        "description": "Sector label to filter peers (e.g., 'Fintech').",
+                    },
+                    "financial_metric": {
+                        "type": "string",
+                        "description": "Metric to benchmark (arr, mrr, runway, burn).",
+                    },
+                },
+                "required": ["sector", "financial_metric"],
+            },
+        )
+        self._tools.append(Tool(function_declarations=[self._peer_function]))
+        self._tool_config = self._grounding_agent.tool_config or ToolConfig(
+            function_calling_config=ToolConfig.FunctionCallingConfig(
+                mode=ToolConfig.FunctionCallingConfig.Mode.AUTO
+            )
+        )
+
+        try:
+            self._bq_client: Optional[bigquery.Client] = bigquery.Client(project=settings.GCP_PROJECT_ID)
+        except Exception as exc:  # pragma: no cover - ADC failures are runtime issues
+            logger.warning("Unable to initialise BigQuery client for chat agent: %s", exc)
+            self._bq_client = None
+        self._memo_table_id = self._resolve_table_id(settings.BIGQUERY_DATASET, settings.BIGQUERY_MEMO_TABLE)
 
     async def generate_response(self, analysis: Dict[str, Any], history: List[Dict[str, Any]]) -> str:
         """Generate a response to the latest user message."""
@@ -43,7 +89,7 @@ class StartupChatAgent:
         else:
             prompt = self._build_chat_prompt(context, cleaned_history, last_user_message)
 
-        response = self._model.generate_content(prompt, generation_config=self._config)
+        response = self._invoke_with_tools(prompt)
         text = self._extract_text(response)
         cleaned = text.strip()
         if not cleaned:
@@ -166,6 +212,140 @@ class StartupChatAgent:
                     chunks.append(part_text)
         joined = "".join(chunks)
         return joined or (text if isinstance(text, str) else "")
+
+    def _invoke_with_tools(self, prompt: str) -> Any:
+        if not self._tools:
+            return self._model.generate_content(prompt, generation_config=self._config)
+
+        response = self._model.generate_content(
+            prompt,
+            generation_config=self._config,
+            tools=self._tools,
+            tool_config=self._tool_config,
+        )
+        return self._handle_function_calls([prompt], response)
+
+    def _handle_function_calls(self, contents: List[Any], response: Any) -> Any:
+        call = self._extract_function_call(response)
+        iterations = 0
+        while call and iterations < 3:
+            tool_payload = self._dispatch_tool(call)
+            if tool_payload is None:
+                break
+            contents.append(
+                Part.from_function_response(
+                    name=getattr(call, "name", ""),
+                    response={"result": tool_payload},
+                )
+            )
+            response = self._model.generate_content(
+                contents,
+                generation_config=self._config,
+                tools=self._tools,
+                tool_config=self._tool_config,
+            )
+            call = self._extract_function_call(response)
+            iterations += 1
+        return response
+
+    def _extract_function_call(self, response: Any) -> Any:
+        for candidate in getattr(response, "candidates", []) or []:
+            content = getattr(candidate, "content", None)
+            if not content:
+                continue
+            for part in getattr(content, "parts", []) or []:
+                function_call = getattr(part, "function_call", None)
+                if function_call:
+                    return function_call
+        return None
+
+    def _dispatch_tool(self, function_call: Any) -> Optional[Dict[str, Any]]:
+        name = getattr(function_call, "name", "")
+        arguments = self._normalise_args(getattr(function_call, "args", {}))
+        if name == "search_peer_data":
+            return self._execute_peer_query(arguments)
+        logger.warning("Received unsupported tool call: %s", name)
+        return {"error": f"Unsupported tool '{name}'"}
+
+    @staticmethod
+    def _normalise_args(raw: Any) -> Dict[str, Any]:
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+                return parsed if isinstance(parsed, dict) else {}
+            except json.JSONDecodeError:
+                return {}
+        return {}
+
+    def _execute_peer_query(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        if not self._bq_client or not self._memo_table_id:
+            return {"error": "Peer benchmark store is not configured."}
+
+        metric = str(args.get("financial_metric", "")).lower()
+        sector = str(args.get("sector", "")).strip()
+        metric_paths = {
+            "arr": "$.financials.srr_mrr.current_booked_arr",
+            "mrr": "$.financials.srr_mrr.current_mrr",
+            "runway": "$.financials.burn_and_runway.stated_runway",
+            "burn": "$.financials.burn_and_runway.implied_net_burn",
+        }
+        json_path = metric_paths.get(metric)
+        if not json_path:
+            return {"error": f"Unsupported financial metric '{metric}'."}
+
+        query = f"""
+            WITH parsed AS (
+              SELECT
+                deal_id,
+                JSON_VALUE(PARSE_JSON(memo_json), '$.company_overview.name') AS company_name,
+                JSON_VALUE(PARSE_JSON(memo_json), '$.company_overview.sector') AS sector,
+                SAFE_CAST(REGEXP_REPLACE(JSON_VALUE(PARSE_JSON(memo_json), '{json_path}'), r'[^0-9.+-]', '') AS FLOAT64) AS metric_value
+              FROM `{self._memo_table_id}`
+            )
+            SELECT
+              AVG(metric_value) AS average_metric,
+              APPROX_QUANTILES(metric_value, 100)[OFFSET(50)] AS median_metric,
+              APPROX_QUANTILES(metric_value, 100)[OFFSET(75)] AS percentile_75,
+              COUNTIF(metric_value IS NOT NULL) AS sample_size,
+              ARRAY_AGG(STRUCT(deal_id, company_name, metric_value) ORDER BY metric_value DESC LIMIT 5) AS top_peers
+            FROM parsed
+            WHERE metric_value IS NOT NULL
+              AND (@sector = '' OR sector = @sector)
+        """
+
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("sector", "STRING", sector),
+            ]
+        )
+
+        results = list(self._bq_client.query(query, job_config=job_config).result())
+        if not results:
+            return {"average_metric": None, "median_metric": None, "percentile_75": None, "sample_size": 0, "top_peers": []}
+
+        row = results[0]
+        peers = [dict(peer) for peer in row.get("top_peers", []) or []]
+        return {
+            "metric": metric,
+            "sector": sector,
+            "average_metric": float(row.get("average_metric") or 0.0) if row.get("average_metric") is not None else None,
+            "median_metric": float(row.get("median_metric") or 0.0) if row.get("median_metric") is not None else None,
+            "percentile_75": float(row.get("percentile_75") or 0.0) if row.get("percentile_75") is not None else None,
+            "sample_size": int(row.get("sample_size") or 0),
+            "top_peers": peers,
+        }
+
+    @staticmethod
+    def _resolve_table_id(dataset: Optional[str], table: Optional[str]) -> Optional[str]:
+        if not dataset or not table:
+            return None
+        if "." in table:
+            return table
+        if "." in dataset:
+            return f"{dataset}.{table}"
+        return f"{settings.GCP_PROJECT_ID}.{dataset}.{table}"
 
     @staticmethod
     def _ensure_highlight(text: str) -> str:
