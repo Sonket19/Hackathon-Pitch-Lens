@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { BrainCircuit } from 'lucide-react';
-import Pitch from '../app/Pitch.png'
-import Image from "next/image";
+import Pitch from '../app/Pitch.png';
+import Image from 'next/image';
 
 export default function Header() {
   return (

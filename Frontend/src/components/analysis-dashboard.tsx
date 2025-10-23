@@ -1,6 +1,7 @@
 
 'use client';
 
+import Link from 'next/link';
 import { useState } from 'react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { AnalysisData } from '@/lib/types';
@@ -10,7 +11,7 @@ import BusinessModel from './business-model';
 import Financials from './financials';
 import RiskAnalysis from './risk-analysis';
 import Chatbot from './chatbot';
-import { Briefcase, ShoppingCart, BarChart, Banknote, ShieldAlert, MessageCircle, SlidersHorizontal, Loader2, FileArchive, FileText, Video, Mic, Type } from 'lucide-react';
+import { Briefcase, ShoppingCart, BarChart, Banknote, ShieldAlert, MessageCircle, SlidersHorizontal, Loader2, FileArchive, FileText, Video, Mic, Type, UserRound } from 'lucide-react';
 import { Button } from './ui/button';
 import {
   Dialog,
@@ -263,9 +264,12 @@ export default function AnalysisDashboard({ analysisData: initialAnalysisData, s
                 </div>
             </DialogContent>
         </Dialog>
-        <Dialog open={isCustomizeDialogOpen} onOpenChange={setIsCustomizeDialogOpen}>
+        <div className="flex flex-wrap gap-3">
+          <Dialog open={isCustomizeDialogOpen} onOpenChange={setIsCustomizeDialogOpen}>
             <DialogTrigger asChild>
-              <Button><SlidersHorizontal /> {memo ? 'Regenerate' : 'Generate'} Summary</Button>
+              <Button>
+                <SlidersHorizontal className="mr-2" /> {memo ? 'Regenerate' : 'Generate'} Summary
+              </Button>
             </DialogTrigger>
             <DialogContent className="sm:max-w-[625px]">
               <DialogHeader>
@@ -304,7 +308,12 @@ export default function AnalysisDashboard({ analysisData: initialAnalysisData, s
               </DialogFooter>
             </DialogContent>
           </Dialog>
-      </div>
+          <Button asChild variant="outline">
+            <Link href={`/startup/${startupId}/contact`} className="flex items-center">
+              <UserRound className="mr-2 h-4 w-4" /> Contact
+            </Link>
+          </Button>
+        </div>
       <Tabs defaultValue="overview">
         <TabsList className="grid w-full grid-cols-2 md:grid-cols-6 h-auto mb-6">
           <TabsTrigger value="overview" className="h-12"><Briefcase className="mr-2"/>Overview</TabsTrigger>
