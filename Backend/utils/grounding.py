@@ -47,14 +47,18 @@ class GroundedKnowledgeAgent:
         datastore_id = datastore if datastore is not None else settings.VERTEX_GROUNDED_DATASTORE
         if datastore_id:
             try:
-                tools.append(grounding.Retrieval(grounding.VertexAISearch(datastore=datastore_id)))
+                vertex_search = grounding.Retrieval(
+                    grounding.VertexAISearch(datastore=datastore_id)
+                )
+                tools.append(Tool.from_retrieval(vertex_search))
             except Exception as exc:  # pragma: no cover - defensive logging
                 logger.warning("Unable to initialise Vertex AI Search grounding: %s", exc)
 
         use_google = settings.VERTEX_ENABLE_GOOGLE_GROUNDING if enable_google_search is None else enable_google_search
         if use_google:
             try:
-                tools.append(grounding.GoogleSearchRetrieval())
+                google_search = grounding.GoogleSearchRetrieval()
+                tools.append(Tool.from_google_search_retrieval(google_search))
             except Exception as exc:  # pragma: no cover - defensive logging
                 logger.warning("Unable to initialise Google Search grounding: %s", exc)
 
