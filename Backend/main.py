@@ -1,13 +1,12 @@
-from fastapi import Body, BackgroundTasks, FastAPI, File, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import io
 import logging
 import os
-import time
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import uvicorn
 from google.cloud import storage
@@ -26,12 +25,8 @@ from utils.cache_utils import build_weight_signature
 from utils.docx_utils import MemoExporter
 from utils.firestore_utils import FirestoreManager
 from utils.gcs_utils import GCSManager
-from utils.naming import build_company_display_name
-from utils.ocr_utils import PDFProcessor
-from utils.search_utils import PublicDataGatherer
 from utils.summarizer import GeminiSummarizer
 from utils.chat_agent import StartupChatAgent
-from utils.email_utils import extract_emails
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -65,9 +60,7 @@ app.include_router(risk_router)
 
 # ---------- Initialize services ----------
 gcs_manager = GCSManager()
-pdf_processor = PDFProcessor()
 gemini_summarizer = GeminiSummarizer()
-data_gatherer = PublicDataGatherer()
 memo_exporter = MemoExporter()
 firestore_manager = FirestoreManager()
 chat_agent = StartupChatAgent()
@@ -84,8 +77,6 @@ async def health_check():
 
 @app.post("/upload", response_model=dict)
 async def upload_deal(
-    background_tasks: BackgroundTasks,
-    # company_name: str,
     pitch_deck: UploadFile = File(...),
 ):
     """Upload deal materials and start processing"""
@@ -98,7 +89,7 @@ async def upload_deal(
         # Create deal metadata
         metadata = DealMetadata(
             deal_id=deal_id,
-            status="uploading",
+            status="queued",
             created_at=datetime.utcnow(),
         )
 
@@ -120,15 +111,12 @@ async def upload_deal(
             updates["metadata.deck_hash"] = deck_hash
         await firestore_manager.update_deal(deal_id, updates)
 
-        # Start background processing
-        background_tasks.add_task(process_deal, deal_id, file_urls, deck_hash)
-
         return {
             "deal_id": deal_id,
             # "company_name": company_name,
-            "status": "uploaded",
+            "status": "queued",
             "files": file_urls,
-            "message": "Files uploaded successfully. Processing started."
+            "message": "Files uploaded successfully. Automated processing will begin shortly."
         }
 
     except Exception as e:
@@ -222,181 +210,6 @@ async def interview_chat(request: ChatRequest) -> ChatResponse:
         logger.error("Chat generation error: %s", exc)
         raise HTTPException(status_code=500, detail="Unable to generate chat response") from exc
 
-
-# ---------- Background Processing ----------
-async def process_deal(deal_id: str, file_urls: dict, deck_hash: Optional[str] = None):
-    """Background task to process deal materials"""
-    try:
-        print("process_deal called")
-        await firestore_manager.update_deal(deal_id, {"metadata.status": "processing"})
-        extracted_text: Dict[str, Any] = {}
-        temp_res: Dict[str, Any] = {}
-        public_data: Dict[str, Any] = {}
-        stage_timings: Dict[str, Any] = {}
-
-        deal_snapshot = await firestore_manager.get_deal(deal_id) or {}
-        metadata_snapshot = deal_snapshot.get('metadata', {}) or {}
-        if not deck_hash:
-            deck_hash = metadata_snapshot.get('deck_hash')
-        cache_bundle = await firestore_manager.get_cached_deck(deck_hash)
-
-        cache_hit = bool(cache_bundle and cache_bundle.get('summary'))
-        if cache_hit:
-            logger.info("Reusing cached analysis for deal %s (hash %s)", deal_id, deck_hash)
-            temp_res = cache_bundle.get('summary', {}) or {}
-            extracted_text = cache_bundle.get('extracted_text', {}) or {}
-            public_data = cache_bundle.get('public_data', {}) or {}
-            stage_timings['cache_hit'] = True
-
-            if 'pitch_deck' not in extracted_text:
-                logger.info("Cached payload missing raw pitch deck for deal %s; reprocessing", deal_id)
-                cache_hit = False
-                temp_res = {}
-                extracted_text = {}
-                public_data = {}
-
-        logos_detected: List[str] = []
-
-        if not cache_hit and 'pitch_deck_url' in file_urls:
-            logger.info(f"Processing PDF for deal {deal_id}")
-            pdf_start = time.perf_counter()
-            pdf_data = await pdf_processor.process_pdf(file_urls['pitch_deck_url'])
-            stage_timings['pdf_processing_s'] = time.perf_counter() - pdf_start
-
-            summary_snapshot = {
-                "concise": pdf_data.get("concise", ""),
-                "founder_response": pdf_data.get("founder_response", []),
-                "sector_response": pdf_data.get("sector_response", ""),
-                "company_name_response": pdf_data.get("company_name_response", ""),
-                "product_name_response": pdf_data.get("product_name_response", ""),
-            }
-            temp_res = summary_snapshot
-            extracted_text = {
-                "pitch_deck": {
-                    "raw": pdf_data.get("raw", {}),
-                    "concise": summary_snapshot["concise"],
-                    "logos": pdf_data.get("logos", []),
-                }
-            }
-            logos_detected = pdf_data.get("logos", []) or []
-
-        if not logos_detected:
-            pitch_payload = extracted_text.get("pitch_deck", {}) if isinstance(extracted_text, dict) else {}
-            if isinstance(pitch_payload, dict):
-                logos_detected = pitch_payload.get("logos", []) or []
-
-        if not temp_res:
-            raise ValueError("Pitch deck summary could not be generated")
-
-        company_name = temp_res.get("company_name_response", "")
-        product_name = temp_res.get("product_name_response", "")
-
-        company_for_search = company_name or metadata_snapshot.get('company_legal_name', "")
-        raw_founders = temp_res.get("founder_response", []) or []
-        if isinstance(raw_founders, list):
-            founders_for_search = [str(name).strip() for name in raw_founders if str(name).strip()]
-        elif isinstance(raw_founders, str) and raw_founders.strip():
-            founders_for_search = [raw_founders.strip()]
-        else:
-            founders_for_search = []
-        sector_for_search = temp_res.get("sector_response", "")
-
-        if not public_data:
-            logger.info(f"Gathering public data for deal {deal_id}")
-            public_start = time.perf_counter()
-            public_data = await data_gatherer.gather_data(
-                company_for_search,
-                founders_for_search,
-                sector_for_search,
-                logos=logos_detected,
-            )
-            stage_timings['public_data_s'] = time.perf_counter() - public_start
-
-        if deck_hash and not cache_hit:
-            await firestore_manager.set_cached_deck(
-                deck_hash,
-                {
-                    "summary": temp_res,
-                    "extracted_text": extracted_text,
-                    "public_data": public_data,
-                },
-            )
-
-        display_name = build_company_display_name(company_name, product_name)
-
-        founders = list(dict.fromkeys(founders_for_search))
-
-        existing_email_values: List[str] = []
-        snapshot_emails = metadata_snapshot.get('founder_emails')
-        if isinstance(snapshot_emails, list):
-            existing_email_values.extend(str(item) for item in snapshot_emails if isinstance(item, str))
-        snapshot_contact = metadata_snapshot.get('contact_email')
-        if isinstance(snapshot_contact, str) and snapshot_contact.strip():
-            existing_email_values.append(snapshot_contact.strip())
-
-        founder_emails = extract_emails(
-            existing_email_values,
-            extracted_text,
-            public_data,
-            deal_snapshot.get('memo', {}),
-        )
-
-        contact_email = snapshot_contact.strip() if isinstance(snapshot_contact, str) and snapshot_contact.strip() else None
-        if founder_emails and not contact_email:
-            contact_email = founder_emails[0]
-
-        logo_companies = public_data.get("logo_companies", []) if isinstance(public_data, dict) else []
-
-        update_payload: Dict[str, Any] = {
-            "extracted_text": extracted_text,
-            "public_data": public_data,
-            "metadata.status": "processed",
-            "metadata.processed_at": datetime.utcnow(),
-            "metadata.company_name": company_name or product_name,
-            "metadata.display_name": display_name,
-            "metadata.company_legal_name": company_name,
-            "metadata.product_name": product_name,
-            "metadata.names": {
-                "company": company_name,
-                "product": product_name,
-                "display": display_name,
-            },
-            "metadata.founder_names": founders,
-            "metadata.sector": sector_for_search,
-            "metadata.cached_from_hash": cache_hit,
-        }
-
-        if founder_emails:
-            update_payload["metadata.founder_emails"] = founder_emails
-        if contact_email:
-            update_payload["metadata.contact_email"] = contact_email
-        if logo_companies:
-            update_payload["metadata.logo_companies"] = logo_companies
-
-        write_start = time.perf_counter()
-        await firestore_manager.update_deal(
-            deal_id,
-            update_payload,
-        )
-        stage_timings['firestore_write_s'] = time.perf_counter() - write_start
-
-        if stage_timings:
-            timing_payload = {}
-            for key, value in stage_timings.items():
-                if isinstance(value, bool):
-                    timing_payload[key] = value
-                elif isinstance(value, (int, float)):
-                    timing_payload[key] = round(float(value), 3)
-                else:
-                    timing_payload[key] = value
-
-            logger.info(
-                "Deal %s processing timings (s): %s",
-                deal_id,
-                timing_payload,
-            )
-
-        logger.info(f"Deal {deal_id} processed successfully")
 
     except Exception as e:
         logger.error(f"Processing error for deal {deal_id}: {str(e)}")

@@ -15,6 +15,8 @@ import vertexai
 from vertexai.preview.generative_models import GenerationConfig, GenerativeModel, Part
 
 from config.settings import settings
+from utils.grounding import GroundedKnowledgeAgent
+from utils.vector_index import DealVectorIndex
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +50,7 @@ DEFAULT_MEMO_TEMPLATE: Dict[str, Any] = {
         "recent_news": "Not available",
         "competitor_details": [],
         "sub_segment_opportunities": [],
+        "peer_comparables": [],
     },
     "business_model": {
         "revenue_streams": "Not available",
@@ -96,6 +99,13 @@ class GeminiSummarizer:
             top_p=1.0,
             top_k=1,
         )
+        self._grounding_agent = GroundedKnowledgeAgent()
+        self._grounding_tools = self._grounding_agent.tools
+        self._grounding_tool_config = self._grounding_agent.tool_config
+        try:
+            self._vector_index: Optional[DealVectorIndex] = DealVectorIndex()
+        except ValueError:
+            self._vector_index = None
 
     def _generate_text(self, prompt: str, media_parts: Optional[List[Part]] = None) -> str:
         """Send a prompt to Gemini, retrying without media if multimodal fails."""
@@ -113,6 +123,8 @@ class GeminiSummarizer:
             response = self.model.generate_content(
                 _build_content(media_parts),
                 generation_config=self._generation_config,
+                tools=self._grounding_tools,
+                tool_config=self._grounding_tool_config,
             )
         except Exception as exc:
             if media_parts:
@@ -123,6 +135,8 @@ class GeminiSummarizer:
                 response = self.model.generate_content(
                     prompt,
                     generation_config=self._generation_config,
+                    tools=self._grounding_tools,
+                    tool_config=self._grounding_tool_config,
                 )
             else:
                 raise
@@ -634,12 +648,15 @@ class GeminiSummarizer:
                     if isinstance(parsed, dict):
                         parsed = self._fill_financial_placeholders(parsed, context, media_parts)
                         merged = self._merge_with_template(parsed)
-                        return self._apply_context_overrides(
-                            merged,
+                        enriched = self._attach_comparables(merged, metadata)
+                        final_payload = self._apply_context_overrides(
+                            enriched,
                             metadata,
                             extracted_text,
                             public_data,
                         )
+                        self._upsert_vector_index(final_payload, metadata)
+                        return final_payload
                 except json.JSONDecodeError:
                     logger.warning(
                         "Gemini memo response was not valid JSON; falling back to default template.",
@@ -647,14 +664,16 @@ class GeminiSummarizer:
 
             fallback_seed = self._fill_financial_placeholders({}, context, media_parts)
             fallback = self._merge_with_template(fallback_seed)
+            enriched_fallback = self._attach_comparables(fallback, metadata)
             contextualised = self._apply_context_overrides(
-                fallback,
+                enriched_fallback,
                 metadata,
                 extracted_text,
                 public_data,
             )
             if clean:
                 contextualised["raw_text"] = clean
+            self._upsert_vector_index(contextualised, metadata)
             return contextualised
 
         except Exception as exc:  # pragma: no cover - defensive logging
@@ -759,6 +778,42 @@ class GeminiSummarizer:
 
         _deep_update(merged, payload)
         return merged
+
+    def _attach_comparables(self, memo: Dict[str, Any], metadata: Dict[str, Any]) -> Dict[str, Any]:
+        if not self._vector_index:
+            return memo
+
+        raw_deal_id = metadata.get("deal_id") or metadata.get("id") or metadata.get("display_name")
+        deal_id = str(raw_deal_id) if raw_deal_id else None
+        try:
+            comparables = self._vector_index.find_similar_deals(
+                memo,
+                metadata,
+                exclude_deal_id=deal_id,
+            )
+        except Exception as exc:  # pragma: no cover - service errors only surface at runtime
+            logger.warning("Comparable search failed: %s", exc)
+            return memo
+
+        if not comparables:
+            return memo
+
+        market_block = memo.setdefault("market_analysis", {})
+        market_block["peer_comparables"] = comparables
+        return memo
+
+    def _upsert_vector_index(self, memo: Dict[str, Any], metadata: Dict[str, Any]) -> None:
+        if not self._vector_index:
+            return
+
+        raw_deal_id = metadata.get("deal_id") or metadata.get("id") or metadata.get("display_name")
+        if not raw_deal_id:
+            return
+
+        try:
+            self._vector_index.upsert_deal(str(raw_deal_id), memo, metadata)
+        except Exception as exc:  # pragma: no cover - BigQuery/Vertex availability issues
+            logger.warning("Vector index upsert failed: %s", exc)
 
     def _collect_missing_financial_fields(
         self, payload: Dict[str, Any]
