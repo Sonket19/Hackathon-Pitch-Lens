@@ -43,21 +43,23 @@ class GroundedKnowledgeAgent:
             max_output_tokens=1024,
         )
 
-        sources: List[grounding.DynamicRetrievalConfig] = []
+        tools: List[Tool] = []
         datastore_id = datastore if datastore is not None else settings.VERTEX_GROUNDED_DATASTORE
         if datastore_id:
             try:
-                sources.append(grounding.VertexAISearch(datastore=datastore_id))
+                tools.append(grounding.Retrieval(grounding.VertexAISearch(datastore=datastore_id)))
             except Exception as exc:  # pragma: no cover - defensive logging
                 logger.warning("Unable to initialise Vertex AI Search grounding: %s", exc)
 
         use_google = settings.VERTEX_ENABLE_GOOGLE_GROUNDING if enable_google_search is None else enable_google_search
         if use_google:
-            sources.append(grounding.GoogleSearchRetrieval())
+            try:
+                tools.append(grounding.GoogleSearchRetrieval())
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.warning("Unable to initialise Google Search grounding: %s", exc)
 
-        if sources:
-            retrieval_tool = grounding.Retrieval(grounding_sources=sources)
-            self._tools: Optional[List[Tool]] = [retrieval_tool]
+        if tools:
+            self._tools = tools
             self._tool_config: Optional[ToolConfig] = ToolConfig(
                 function_calling_config=ToolConfig.FunctionCallingConfig(
                     mode=ToolConfig.FunctionCallingConfig.Mode.AUTO
