@@ -61,7 +61,7 @@ export type Financials = {
   funding_history: string;
   projections: FinancialProjection[];
   valuation_rationale: string;
-srr_mrr: {
+  srr_mrr: {
     current_booked_arr: string;
     current_mrr: string;
   };
@@ -151,7 +151,10 @@ export type Metadata = {
 export type AnalysisData = {
   memo: Memo;
   raw_files: {
-    pitch_deck_url: string;
+    pitch_deck_url?: string;
+    video_pitch_deck_url?: string;
+    audio_pitch_deck_url?: string;
+    text_pitch_deck_url?: string;
   };
   extracted_text: any;
   metadata: Metadata;
