@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Any, Dict, Iterable, List, Optional
 
 import vertexai
@@ -16,14 +17,21 @@ class StartupChatAgent:
     """Generate conversational answers using memo context."""
 
     def __init__(self, model: Optional[GenerativeModel] = None) -> None:
-        vertexai.init(project=settings.GCP_PROJECT_ID, location=settings.GCP_LOCATION)
-        self._model = model or GenerativeModel("gemini-2.5-pro")
+        self._model: Optional[GenerativeModel] = None
         self._config = GenerationConfig(
             temperature=0.35,
             top_p=0.9,
             top_k=64,
             max_output_tokens=2048,
         )
+
+        try:
+            if settings.GCP_PROJECT_ID:
+                vertexai.init(project=settings.GCP_PROJECT_ID, location=settings.GCP_LOCATION)
+                self._model = model or GenerativeModel("gemini-2.5-pro")
+        except Exception as exc:  # pragma: no cover - depends on external services
+            logger = logging.getLogger(__name__)
+            logger.warning("Gemini chat unavailable (%s); using rule-based responses", exc)
 
     async def generate_response(self, analysis: Dict[str, Any], history: List[Dict[str, Any]]) -> str:
         """Generate a response to the latest user message."""
@@ -37,6 +45,9 @@ class StartupChatAgent:
         context = self._build_context(analysis)
         cleaned_history = self._normalise_history(history)
         last_user_message = next((msg["content"] for msg in reversed(cleaned_history) if msg["role"] == "user"), None)
+
+        if not self._model:
+            return self._fallback_response(context, last_user_message)
 
         if last_user_message is None:
             prompt = self._build_intro_prompt(context)
@@ -166,6 +177,24 @@ class StartupChatAgent:
                     chunks.append(part_text)
         joined = "".join(chunks)
         return joined or (text if isinstance(text, str) else "")
+
+    def _fallback_response(self, context: str, last_user_message: Optional[str]) -> str:
+        if not context:
+            context = "No memo data is available yet."
+
+        if not last_user_message:
+            return (
+                "Thanks for uploading the pitch materials. I've summarised the key points "
+                "from the available memo data below. Let me know what you'd like to explore next.\n\n"
+                f"{context}"
+            )
+
+        return (
+            "Gemini chat is offline right now, so I'm relying on the memo content that has "
+            "already been generated. Here are the key takeaways:\n\n"
+            f"{context}\n\n"
+            f"While I can't craft a bespoke answer, this context should help you reason about: {last_user_message}"
+        )
 
     @staticmethod
     def _ensure_highlight(text: str) -> str:

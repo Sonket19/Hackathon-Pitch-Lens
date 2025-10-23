@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any, Dict, List
+import textwrap
+from typing import Any, Dict, List, Optional
 
 import vertexai
 from vertexai.preview.generative_models import GenerationConfig, GenerativeModel
@@ -17,8 +18,7 @@ class GeminiSummarizer:
     """Wrapper around Gemini with deterministic defaults and parsing helpers."""
 
     def __init__(self) -> None:
-        vertexai.init(project=settings.GCP_PROJECT_ID, location=settings.GCP_LOCATION)
-        self.model = GenerativeModel("gemini-2.5-pro")
+        self.model: Optional[GenerativeModel] = None
         # Force deterministic behaviour so repeated uploads stay consistent.
         self._generation_config = GenerationConfig(
             temperature=0.0,
@@ -26,7 +26,17 @@ class GeminiSummarizer:
             top_k=1,
         )
 
+        try:
+            if settings.GCP_PROJECT_ID:
+                vertexai.init(project=settings.GCP_PROJECT_ID, location=settings.GCP_LOCATION)
+                self.model = GenerativeModel("gemini-2.5-pro")
+        except Exception as exc:  # pragma: no cover - depends on external services
+            logger.warning("Gemini unavailable (%s); using local summariser", exc)
+
     def _generate_text(self, prompt: str) -> str:
+        if not self.model:
+            return self._fallback_generate_text(prompt)
+
         response = self.model.generate_content(
             prompt,
             generation_config=self._generation_config,
@@ -37,6 +47,19 @@ class GeminiSummarizer:
     def generate_text(self, prompt: str) -> str:
         """Public wrapper for deterministic text generation."""
         return self._generate_text(prompt)
+
+    def _fallback_generate_text(self, prompt: str) -> str:
+        """Generate deterministic text without Vertex AI.
+
+        The prompts usually end with the corpus to summarise. We extract the
+        final paragraph and surface a concise snippet so downstream callers still
+        receive meaningful information even when Gemini is unavailable.
+        """
+
+        text = prompt.split("\n\n")[-1].strip() or prompt
+        sentences = re.split(r"(?<=[.!?])\s+", text)
+        summary = " ".join(sentences[:3]).strip()
+        return summary or textwrap.shorten(text, width=280, placeholder="...")
 
     @staticmethod
     def _coerce_string_list(value: Any) -> List[str]:
@@ -156,6 +179,9 @@ class GeminiSummarizer:
                 '- When unsure, leave the value as an empty string "".'
             )
 
+            if not self.model:
+                return await self._local_summarize_pitch_deck(full_text)
+
             structured_raw = self._generate_text(prompt)
             structured_clean = self._strip_json_fences(structured_raw)
 
@@ -189,19 +215,62 @@ class GeminiSummarizer:
 
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.error("Pitch deck summarization error: %s", exc)
-            return {
-                "problem": "Error in processing",
-                "solution": "Error in processing",
-                "market": "Error in processing",
-                "team": "Error in processing",
-                "traction": "Error in processing",
-                "financials": "Error in processing",
-                "founder_response": [],
-                "sector_response": "",
-                "company_name_response": "",
-                "product_name_response": "",
-                "summary_res": "",
-            }
+            return await self._local_summarize_pitch_deck(full_text)
+
+    async def _local_summarize_pitch_deck(self, full_text: str) -> Dict[str, Any]:
+        """Heuristic summariser used when Gemini is unavailable."""
+
+        cleaned_lines = [line.strip() for line in full_text.splitlines() if line.strip()]
+        joined_text = " ".join(cleaned_lines)
+        sentences = re.split(r"(?<=[.!?])\s+", joined_text)
+        summary = " ".join(sentences[:5]).strip()
+        if not summary:
+            summary = textwrap.shorten(joined_text or "No content supplied.", width=320, placeholder="...")
+
+        founder_candidates: List[str] = []
+        for line in cleaned_lines:
+            if re.search(r"(?i)founder|ceo|team", line):
+                founder_candidates.extend(
+                    re.findall(r"[A-Z][A-Za-z]+(?: [A-Z][A-Za-z]+)+", line)
+                )
+        founders = self._dedupe_preserve_order(founder_candidates)[:3]
+
+        sector = ""
+        lowered = joined_text.lower()
+        sector_keywords = {
+            "artificial intelligence": ["artificial intelligence", "ai", "machine learning"],
+            "fintech": ["fintech", "payments", "banking"],
+            "healthcare": ["health", "healthcare", "medtech", "biotech"],
+            "climate": ["climate", "sustainability", "energy"],
+        }
+        for label, keywords in sector_keywords.items():
+            if any(keyword in lowered for keyword in keywords):
+                sector = label
+                break
+        if not sector and cleaned_lines:
+            sector = cleaned_lines[0].split(" ")[0]
+
+        company_name = ""
+        if cleaned_lines:
+            headline = cleaned_lines[0]
+            match = re.findall(r"[A-Z][A-Za-z]+(?: [A-Z][A-Za-z]+)+", headline)
+            if match:
+                company_name = match[0]
+
+        product_name = ""
+        if len(cleaned_lines) > 1:
+            second_line = cleaned_lines[1]
+            product_match = re.findall(r"[A-Z][A-Za-z]+(?: [A-Z][A-Za-z]+)+", second_line)
+            if product_match:
+                product_name = product_match[0]
+
+        return {
+            "summary_res": summary,
+            "founder_response": founders,
+            "sector_response": sector,
+            "company_name_response": company_name,
+            "product_name_response": product_name,
+        }
 
     async def summarize_audio_transcript(self, transcript: str) -> str:
         """Summarize audio transcript."""
@@ -232,6 +301,9 @@ class GeminiSummarizer:
             user_input = deal_data.get("user_input", {})
 
             context = self._build_memo_context(metadata, extracted_text, public_data, user_input)
+
+            if not self.model:
+                return self._build_stub_memo(metadata, extracted_text, public_data)
 
             prompt = f"""
                 You are an investment analyst. Your task is to generate a structured investment memo for the startup under review.
@@ -361,6 +433,56 @@ class GeminiSummarizer:
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.error("Memo generation error: %s", exc)
             return {"error": "Error generating memo"}
+
+    def _build_stub_memo(
+        self,
+        metadata: Dict[str, Any],
+        extracted_text: Dict[str, Any],
+        public_data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Create a lightweight memo when Gemini is unavailable."""
+
+        pitch_summary = ""
+        if isinstance(extracted_text, dict):
+            pitch = extracted_text.get("pitch_deck")
+            if isinstance(pitch, dict):
+                pitch_summary = str(pitch.get("concise", ""))
+
+        def _fallback(value: Any, default: str = "Not available") -> str:
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+            return default
+
+        founders = []
+        if isinstance(metadata.get("founder_names"), list):
+            founders = [str(item) for item in metadata["founder_names"] if str(item).strip()]
+
+        return {
+            "company_overview": {
+                "name": _fallback(metadata.get("display_name") or metadata.get("company_name")),
+                "sector": _fallback(metadata.get("sector")),
+                "founders": founders,
+                "technology": pitch_summary or "Not available",
+            },
+            "market_analysis": {
+                "industry_size_and_growth": {
+                    "commentary": _fallback(public_data.get("market_stats", {}).get("summary") if isinstance(public_data.get("market_stats"), dict) else ""),
+                },
+                "recent_news": _fallback("; ".join(public_data.get("news", [])) if isinstance(public_data.get("news"), list) else ""),
+            },
+            "business_model": {
+                "revenue_streams": "Not available",
+                "pricing": "Not available",
+                "scalability": "Not available",
+                "unit_economics": {},
+            },
+            "financials": {},
+            "claims_analysis": [],
+            "risk_metrics": {},
+            "conclusion": {
+                "overall_attractiveness": "Not available",
+            },
+        }
 
     def _build_memo_context(
         self,
