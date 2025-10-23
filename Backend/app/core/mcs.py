@@ -5,8 +5,11 @@ from dataclasses import dataclass
 from typing import Dict
 
 import numpy as np
+from google.api_core.client_options import ClientOptions
+from google.cloud.aiplatform.gapic import PredictionServiceClient
 
 from app.models.risk import FinancialSignals, MCSConfig
+from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +37,12 @@ class MCSSimulationResult:
 
 
 def simulate_financials(financials: FinancialSignals, config: MCSConfig, seed: int = 12345) -> MCSSimulationResult:
+    if settings.VERTEX_MCS_ENDPOINT_ID:
+        try:
+            return _invoke_vertex_simulation(financials, config)
+        except Exception as exc:  # pragma: no cover - network/service failures
+            logger.warning("Remote MCS prediction failed, falling back to local simulation: %s", exc)
+
     iterations = config.iterations
     horizon = config.horizon_months
     rng = np.random.default_rng(seed)
@@ -79,4 +88,31 @@ def simulate_financials(financials: FinancialSignals, config: MCSConfig, seed: i
         p90=float(p90),
         mean=mean,
         success_prob_vs_claim=success_prob,
+    )
+
+
+def _invoke_vertex_simulation(financials: FinancialSignals, config: MCSConfig) -> MCSSimulationResult:
+    client = PredictionServiceClient(
+        client_options=ClientOptions(api_endpoint=f"{settings.GCP_LOCATION}-aiplatform.googleapis.com")
+    )
+    endpoint_path = client.endpoint_path(settings.GCP_PROJECT_ID, settings.GCP_LOCATION, settings.VERTEX_MCS_ENDPOINT_ID)
+
+    instance = {
+        "financials": financials.model_dump(),
+        "config": config.model_dump(),
+    }
+
+    prediction = client.predict(endpoint=endpoint_path, instances=[instance])
+    if not prediction.predictions:
+        raise RuntimeError("Vertex AI MCS endpoint returned no predictions")
+
+    payload = prediction.predictions[0]
+    return MCSSimulationResult(
+        metric=str(payload.get("metric", config.target)),
+        iterations=int(payload.get("iterations", config.iterations)),
+        p10=float(payload.get("p10", 0.0)),
+        p50=float(payload.get("p50", 0.0)),
+        p90=float(payload.get("p90", 0.0)),
+        mean=float(payload.get("mean", 0.0)),
+        success_prob_vs_claim=float(payload.get("success_prob_vs_claim", 0.0)),
     )
