@@ -40,12 +40,16 @@ export default function Financials({ data, claims }: { data: FinancialsType, cla
   const [suggestions, setSuggestions] = useState<string[] | undefined | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  
+
+  const projections = Array.isArray(data?.projections) ? data.projections : [];
+  const claimsList = Array.isArray(claims) ? claims : [];
+
   const handleGenerateSuggestions = async () => {
     setIsLoading(true);
     setError(null);
     try {
-      const result = await generateFinancialMetricsDashboard({ analysisText: JSON.stringify(data) + JSON.stringify(claims) });
+      const serializedAnalysisInput = JSON.stringify(data ?? {}) + JSON.stringify(claimsList);
+      const result = await generateFinancialMetricsDashboard({ analysisText: serializedAnalysisInput });
       setSuggestions(result.followUpSuggestions);
     } catch (e) {
       setError('Failed to generate suggestions. Please try again.');
@@ -59,13 +63,13 @@ export default function Financials({ data, claims }: { data: FinancialsType, cla
       <div>
         <h2 className="font-headline text-2xl mb-4">Key Metrics</h2>
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          <MetricCard title="ARR" value={data.arr_mrr.current_booked_arr} icon={<BarChart2 className="h-4 w-4 text-muted-foreground" />} />
-          <MetricCard title="MRR" value={data.arr_mrr.current_mrr} icon={<Calendar className="h-4 w-4 text-muted-foreground" />} />
-          <MetricCard title="Est. Burn Rate" value={data.burn_and_runway.implied_net_burn} icon={<HelpCircle className="h-4 w-4 text-muted-foreground" />} tooltip="Estimated by dividing funding ask by runway" />
-          <MetricCard title="Runway" value={data.burn_and_runway.stated_runway} icon={<GitBranch className="h-4 w-4 text-muted-foreground" />} />
+          <MetricCard title="ARR" value={data?.srr_mrr?.current_booked_arr} icon={<BarChart2 className="h-4 w-4 text-muted-foreground" />} />
+          <MetricCard title="MRR" value={data?.srr_mrr?.current_mrr} icon={<Calendar className="h-4 w-4 text-muted-foreground" />} />
+          <MetricCard title="Est. Burn Rate" value={data?.burn_and_runway?.implied_net_burn} icon={<HelpCircle className="h-4 w-4 text-muted-foreground" />} tooltip="Estimated by dividing funding ask by runway" />
+          <MetricCard title="Runway" value={data?.burn_and_runway?.stated_runway} icon={<GitBranch className="h-4 w-4 text-muted-foreground" />} />
         </div>
       </div>
-      
+
       <Card>
         <CardHeader>
           <CardTitle className="font-headline text-2xl flex items-center gap-3"><PiggyBank className="w-7 h-7 text-primary"/>Funding</CardTitle>
@@ -73,19 +77,19 @@ export default function Financials({ data, claims }: { data: FinancialsType, cla
         <CardContent className="space-y-4">
           <div className="space-y-1">
             <h4 className="font-semibold">Current Ask</h4>
-            <p className="text-xl font-bold font-headline text-primary">{data.burn_and_runway.funding_ask}</p>
+            <p className="text-xl font-bold font-headline text-primary">{data?.burn_and_runway?.funding_ask || 'N/A'}</p>
           </div>
           <div className="space-y-1">
             <h4 className="font-semibold">Valuation Rationale</h4>
-            <p className="text-sm text-muted-foreground">{data.valuation_rationale}</p>
+            <p className="text-sm text-muted-foreground">{data?.valuation_rationale || 'N/A'}</p>
           </div>
           <div className="space-y-1">
             <h4 className="font-semibold">Previous Funding</h4>
-            <p className="text-sm text-muted-foreground">{data.funding_history}</p>
+            <p className="text-sm text-muted-foreground">{data?.funding_history || 'N/A'}</p>
           </div>
         </CardContent>
       </Card>
-      
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         <Card>
           <CardHeader>
@@ -93,7 +97,7 @@ export default function Financials({ data, claims }: { data: FinancialsType, cla
           </CardHeader>
           <CardContent>
             <ul className="space-y-2">
-            {data.projections.map((projection) => (
+            {projections.map((projection) => (
               <li key={projection.year} className="flex justify-between items-center p-2 rounded-md hover:bg-secondary/50">
                 <span className="font-medium">{projection.year}</span>
                 <span className="font-bold text-lg font-headline text-primary">{projection.revenue}</span>
@@ -103,7 +107,7 @@ export default function Financials({ data, claims }: { data: FinancialsType, cla
           </CardContent>
         </Card>
 
-        {claims.map((claim, index) => (
+        {claimsList.map((claim, index) => (
           <Card key={index}>
             <CardHeader>
               <CardTitle className="font-headline text-xl flex items-center gap-3"><Target className="w-6 h-6 text-primary"/>Claim Analysis: {claim.claim}</CardTitle>
