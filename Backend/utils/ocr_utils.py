@@ -121,11 +121,14 @@ class PDFProcessor:
         """
         try:
             # ---- 1) Prepare Vision async request ----
+            # Asynchronous file processing currently only supports
+            # DOCUMENT_TEXT_DETECTION/TEXT_DETECTION features. Attempting to
+            # request additional feature types (e.g. LOGO_DETECTION) results in
+            # a 400 error: "only DOCUMENT_TEXT_DETECTION and TEXT_DETECTION are
+            # supported". Request only text detection here and derive logos
+            # separately if needed.
             text_feature = vision.Feature(
                 type_=vision.Feature.Type.DOCUMENT_TEXT_DETECTION
-            )
-            logo_feature = vision.Feature(
-                type_=vision.Feature.Type.LOGO_DETECTION
             )
 
             gcs_source = vision.GcsSource(uri=gcs_path)
@@ -146,7 +149,7 @@ class PDFProcessor:
             )
 
             async_request = vision.AsyncAnnotateFileRequest(
-                features=[text_feature, logo_feature],
+                features=[text_feature],
                 input_config=input_config,
                 output_config=output_config,
             )
