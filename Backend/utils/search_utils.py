@@ -149,7 +149,7 @@ class PublicDataGatherer:
 
         except Exception as e:
             logger.error(f"Public data gathering error: {str(e)}")
-            return {}
+            return self._local_fallback(company_name, founder_name, sector, logos)
         
     async def _search_founder_profile(self, founder_name: List[str]) -> Dict[str, Any]:
         """Search for founder background information and potential contact emails."""
