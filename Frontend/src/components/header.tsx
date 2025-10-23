@@ -1,7 +1,9 @@
 import Link from 'next/link';
 import { BrainCircuit } from 'lucide-react';
-import Pitch from '../app/Pitch.png'
-import Image from "next/image";
+import Pitch from '../app/Pitch.png';
+import Image from 'next/image';
+import { buttonVariants } from '@/components/ui/button';
+import { cn } from '@/lib/utils';
 
 export default function Header() {
   return (
@@ -15,6 +17,12 @@ export default function Header() {
           <h1 className="text-2xl md:text-3xl font-headline font-bold text-foreground">
             Pitch Lens
           </h1>
+        </Link>
+        <Link
+          href="/contact"
+          className={cn(buttonVariants({ variant: 'secondary' }), 'font-semibold')}
+        >
+          Contact
         </Link>
       </div>
     </header>

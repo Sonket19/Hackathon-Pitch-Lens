@@ -1,20 +1,36 @@
 
 'use client';
 
-import { useState } from 'react';
-import type { RiskMetrics, Conclusion, AnalysisData } from '@/lib/types';
+import type { RiskMetrics, Conclusion } from '@/lib/types';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
-import { AlertTriangle, ShieldCheck, CheckCircle, Info, SlidersHorizontal, Loader2 } from 'lucide-react';
+import { ShieldCheck, CheckCircle, Loader2 } from 'lucide-react';
 import { Badge } from './ui/badge';
 
+const clampPercentage = (value: number) => Math.min(100, Math.max(0, value));
+
+const formatPercentageDisplay = (value: number) => {
+  const clamped = clampPercentage(value);
+  return `${clamped % 1 === 0 ? clamped.toFixed(0) : clamped.toFixed(1)}%`;
+};
+
 const ScoreCircle = ({ score, isLoading }: { score: string | number; isLoading?: boolean }) => {
-    const numericScore = typeof score === 'string' ? parseFloat(score) : score;
+    const rawScore = typeof score === 'string' ? parseFloat(score) : score;
+    const hasNumericScore = Number.isFinite(rawScore);
+    const scoreString = typeof score === 'string' ? score : '';
+
+    let normalizedScore = hasNumericScore ? Number(rawScore) : 0;
+    if (hasNumericScore && normalizedScore <= 1 && !scoreString.includes('%')) {
+        normalizedScore *= 100;
+    }
+
+    const clampedScore = clampPercentage(normalizedScore);
     const circumference = 2 * Math.PI * 45;
-    const offset = circumference - (numericScore / 100) * circumference;
-  
-    let colorClass = 'text-chart-2';
-    if (numericScore < 70) colorClass = 'text-chart-4';
-    if (numericScore < 50) colorClass = 'text-chart-1';
+    const offset = circumference - (clampedScore / 100) * circumference;
+
+    let colorClass = 'text-chart-5';
+    if (clampedScore >= 75) colorClass = 'text-destructive';
+    else if (clampedScore >= 50) colorClass = 'text-chart-2';
+    else if (clampedScore >= 25) colorClass = 'text-chart-4';
 
     return (
         <div className="relative w-48 h-48">
@@ -28,7 +44,7 @@ const ScoreCircle = ({ score, isLoading }: { score: string | number; isLoading?:
                     cx="50"
                     cy="50"
                 />
-                { !isLoading && (
+                {!isLoading && hasNumericScore && (
                   <circle
                       className={colorClass}
                       strokeWidth="10"
@@ -50,8 +66,10 @@ const ScoreCircle = ({ score, isLoading }: { score: string | number; isLoading?:
                 <Loader2 className="w-12 h-12 animate-spin text-primary" />
               ) : (
                 <>
-                  <span className={`font-headline font-bold text-4xl ${colorClass}`}>{score}</span>
-                  <span className="text-sm text-muted-foreground">Safety Score</span>
+                  <span className={`font-headline font-bold text-4xl ${colorClass}`}>
+                    {hasNumericScore ? formatPercentageDisplay(clampedScore) : 'N/A'}
+                  </span>
+                  <span className="text-sm text-muted-foreground">Risk Score</span>
                 </>
               )}
             </div>
@@ -79,6 +97,9 @@ export default function RiskAnalysis({ riskMetrics, conclusion, isRecalculating 
             <h3 className="font-headline text-xl">Narrative Justification</h3>
             <p className="text-muted-foreground">{riskMetrics.narrative_justification}</p>
             <Badge>{riskMetrics.score_interpretation}</Badge>
+            <p className="text-sm text-muted-foreground">
+              Risk scores are expressed as percentages&mdash;the higher the value, the greater the diligence risk.
+            </p>
           </div>
         </CardContent>
       </Card>
