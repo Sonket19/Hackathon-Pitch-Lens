@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import datetime
 import hashlib
 import logging
-from pathlib import Path
 from typing import Tuple
 
 from fastapi import UploadFile
@@ -31,9 +29,10 @@ class GCSManager:
         self._local_root = Path(local_storage).resolve()
         self._local_root.mkdir(parents=True, exist_ok=True)
 
-        self._use_gcs = bool(settings.GCP_PROJECT_ID and settings.GCS_BUCKET_NAME)
-        self.client = None
-        self.bucket = None
+    async def upload_file(self, file: UploadFile, destination_path: str) -> Tuple[str, str]:
+        """Upload file to Google Cloud Storage"""
+        try:
+            blob = self.bucket.blob(destination_path)
 
         if self._use_gcs:
             try:
@@ -43,20 +42,16 @@ class GCSManager:
                 logger.warning("GCS unavailable (%s); falling back to local storage", exc)
                 self._use_gcs = False
 
-    async def upload_file(self, file: UploadFile, destination_path: str) -> Tuple[str, str]:
-        """Upload a file and return the storage path plus a SHA256 hash."""
+            file_hash = hashlib.sha256(content).hexdigest()
+
+            # Upload to GCS
+            blob.upload_from_string(content, content_type=file.content_type)
 
         content = await file.read()
         file_hash = hashlib.sha256(content).hexdigest()
 
-        if self._use_gcs and self.bucket:
-            try:
-                blob = self.bucket.blob(destination_path)
-                blob.upload_from_string(content, content_type=file.content_type)
-                logger.info("File uploaded to GCS: %s", destination_path)
-                return f"gs://{settings.GCS_BUCKET_NAME}/{destination_path}", file_hash
-            except Exception as exc:  # pragma: no cover - network failure
-                logger.warning("Falling back to local storage after GCS error: %s", exc)
+            logger.info(f"File uploaded to GCS: {destination_path}")
+            return f"gs://{settings.GCS_BUCKET_NAME}/{destination_path}", file_hash
 
         # Local fallback storage path
         local_path = (self._local_root / destination_path).resolve()
