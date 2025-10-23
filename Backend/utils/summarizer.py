@@ -7,6 +7,7 @@ import base64
 import binascii
 import mimetypes
 import os
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
@@ -16,6 +17,68 @@ from vertexai.preview.generative_models import GenerationConfig, GenerativeModel
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
+
+
+DEFAULT_MEMO_TEMPLATE: Dict[str, Any] = {
+    "company_overview": {
+        "name": "Not available",
+        "sector": "Not available",
+        "founders": [],
+        "technology": "Not available",
+    },
+    "market_analysis": {
+        "industry_size_and_growth": {
+            "total_addressable_market": {
+                "name": "Not available",
+                "value": "Not available",
+                "cagr": "Not available",
+                "source": "Not available",
+            },
+            "serviceable_obtainable_market": {
+                "name": "Not available",
+                "value": "Not available",
+                "cagr": "Not available",
+                "source": "Not available",
+            },
+            "commentary": "Not available",
+        },
+        "recent_news": "Not available",
+        "competitor_details": [],
+        "sub_segment_opportunities": [],
+    },
+    "business_model": {
+        "revenue_streams": "Not available",
+        "pricing": "Not available",
+        "scalability": "Not available",
+        "unit_economics": {
+            "customer_lifetime_value_ltv": "Not available",
+            "customer_acquisition_cost_cac": "Not available",
+        },
+    },
+    "financials": {
+        "funding_history": "Not available",
+        "projections": [],
+        "valuation_rationale": "Not available",
+        "srr_mrr": {
+            "current_booked_arr": "Not available",
+            "current_mrr": "Not available",
+        },
+        "burn_and_runway": {
+            "funding_ask": "Not available",
+            "stated_runway": "Not available",
+            "implied_net_burn": "Not available",
+        },
+    },
+    "claims_analysis": [],
+    "risk_metrics": {
+        "composite_risk_score": 0,
+        "score_interpretation": "Not available",
+        "narrative_justification": "Not available",
+    },
+    "conclusion": {
+        "overall_attractiveness": "Not available",
+    },
+}
 
 
 class GeminiSummarizer:
@@ -32,19 +95,35 @@ class GeminiSummarizer:
         )
 
     def _generate_text(self, prompt: str, media_parts: Optional[List[Part]] = None) -> str:
-        if media_parts:
-            try:
-                prompt_part: Union[str, Part] = Part.from_text(prompt)  # type: ignore[attr-defined]
-                content: List[Union[str, Part]] = [prompt_part, *media_parts]
-            except AttributeError:
-                content = [prompt, *media_parts]
-        else:
-            content = prompt
+        """Send a prompt to Gemini, retrying without media if multimodal fails."""
 
-        response = self.model.generate_content(
-            content,
-            generation_config=self._generation_config,
-        )
+        def _build_content(parts: Optional[List[Part]]) -> Union[str, List[Union[str, Part]]]:
+            if parts:
+                try:
+                    prompt_part: Union[str, Part] = Part.from_text(prompt)  # type: ignore[attr-defined]
+                    return [prompt_part, *parts]
+                except AttributeError:
+                    return [prompt, *parts]
+            return prompt
+
+        try:
+            response = self.model.generate_content(
+                _build_content(media_parts),
+                generation_config=self._generation_config,
+            )
+        except Exception as exc:
+            if media_parts:
+                logger.warning(
+                    "Multimodal Gemini call failed (%s); retrying with text-only prompt.",
+                    exc,
+                )
+                response = self.model.generate_content(
+                    prompt,
+                    generation_config=self._generation_config,
+                )
+            else:
+                raise
+
         text = getattr(response, "text", "")
         return text.strip() if isinstance(text, str) else ""
 
@@ -541,11 +620,33 @@ class GeminiSummarizer:
                 media_parts=self._prepare_media_parts(media_inputs),
             )
             clean = re.sub(r"^```json\s*|\s*```$", "", raw_response, flags=re.MULTILINE).strip()
-            try:
-                return json.loads(clean) if clean else {}
-            except json.JSONDecodeError:
-                logger.warning("Gemini memo response was not valid JSON; storing raw payload under 'raw_text'")
-                return {"raw_text": clean}
+
+            if clean:
+                try:
+                    parsed = json.loads(clean)
+                    if isinstance(parsed, dict):
+                        merged = self._merge_with_template(parsed)
+                        return self._apply_context_overrides(
+                            merged,
+                            metadata,
+                            extracted_text,
+                            public_data,
+                        )
+                except json.JSONDecodeError:
+                    logger.warning(
+                        "Gemini memo response was not valid JSON; falling back to default template.",
+                    )
+
+            fallback = self._merge_with_template({})
+            contextualised = self._apply_context_overrides(
+                fallback,
+                metadata,
+                extracted_text,
+                public_data,
+            )
+            if clean:
+                contextualised["raw_text"] = clean
+            return contextualised
 
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.error("Memo generation error: %s", exc)
@@ -635,3 +736,350 @@ class GeminiSummarizer:
                 context_parts.append(f"Evaluation Weightages: {user_input['weightages']}")
 
         return "\n".join(context_parts)
+
+    @staticmethod
+    def _merge_with_template(payload: Dict[str, Any]) -> Dict[str, Any]:
+        merged = deepcopy(DEFAULT_MEMO_TEMPLATE)
+
+        def _deep_update(target: Dict[str, Any], updates: Dict[str, Any]) -> None:
+            for key, value in updates.items():
+                if isinstance(value, dict) and isinstance(target.get(key), dict):
+                    _deep_update(target[key], value)
+                else:
+                    target[key] = value
+
+        _deep_update(merged, payload)
+        return merged
+
+    @staticmethod
+    def _is_placeholder(value: Any) -> bool:
+        if value is None:
+            return True
+        if isinstance(value, str):
+            normalised = value.strip().lower()
+            return normalised in {"", "not available", "n/a", "not specified", "unknown"}
+        if isinstance(value, (list, dict)):
+            return not value
+        return False
+
+    def _apply_context_overrides(
+        self,
+        memo: Dict[str, Any],
+        metadata: Dict[str, Any],
+        extracted_text: Dict[str, Any],
+        public_data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        memo = deepcopy(memo)
+        metadata = metadata if isinstance(metadata, dict) else {}
+        extracted_text = extracted_text if isinstance(extracted_text, dict) else {}
+        public_data = public_data if isinstance(public_data, dict) else {}
+
+        def _assign_if_placeholder(container: Dict[str, Any], key: str, new_value: Any) -> None:
+            if new_value is None:
+                return
+            if key not in container or self._is_placeholder(container.get(key)):
+                container[key] = new_value
+
+        company_overview = memo.get("company_overview", {})
+        if not isinstance(company_overview, dict):
+            company_overview = {}
+            memo["company_overview"] = company_overview
+
+        company_name = metadata.get("display_name") or metadata.get("company_name") or metadata.get("product_name")
+        if isinstance(company_name, str) and company_name.strip():
+            _assign_if_placeholder(company_overview, "name", company_name.strip())
+
+        sector = metadata.get("sector")
+        if isinstance(sector, str) and sector.strip():
+            _assign_if_placeholder(company_overview, "sector", sector.strip())
+
+        founders_section = company_overview.get("founders")
+        if not isinstance(founders_section, list):
+            founders_section = [] if founders_section is None else [founders_section]
+        founder_names = metadata.get("founder_names")
+        if isinstance(founder_names, list) and founder_names:
+            existing_lookup: set[str] = set()
+            for item in founders_section:
+                if isinstance(item, dict):
+                    name_value = str(item.get("name", "")).strip()
+                else:
+                    name_value = str(item).strip()
+                if name_value:
+                    existing_lookup.add(name_value.lower())
+            enhanced_founders: List[Dict[str, str]] = []
+            for entry in founders_section:
+                if isinstance(entry, dict):
+                    name_value = str(entry.get("name", "")).strip()
+                else:
+                    name_value = str(entry).strip()
+                if not name_value:
+                    continue
+                professional_background = "Not available"
+                education = "Not available"
+                previous_ventures = "Not available"
+                if isinstance(entry, dict):
+                    professional_background = entry.get("professional_background", professional_background)
+                    education = entry.get("education", education)
+                    previous_ventures = entry.get("previous_ventures", previous_ventures)
+                enhanced_founders.append(
+                    {
+                        "name": name_value,
+                        "education": education,
+                        "professional_background": professional_background,
+                        "previous_ventures": previous_ventures,
+                    }
+                )
+            for name in founder_names:
+                if not isinstance(name, str) or not name.strip():
+                    continue
+                lowered = name.strip().lower()
+                if lowered in existing_lookup:
+                    continue
+                enhanced_founders.append(
+                    {
+                        "name": name.strip(),
+                        "education": "Not available",
+                        "professional_background": "Not available",
+                        "previous_ventures": "Not available",
+                    }
+                )
+                existing_lookup.add(lowered)
+            if enhanced_founders:
+                company_overview["founders"] = enhanced_founders
+
+        founder_profile = public_data.get("founder_profile")
+        if isinstance(founder_profile, str) and founder_profile.strip() and company_overview.get("founders"):
+            for founder in company_overview["founders"]:
+                if isinstance(founder, dict) and self._is_placeholder(founder.get("professional_background")):
+                    founder["professional_background"] = founder_profile.strip()
+
+        market_analysis = memo.get("market_analysis", {})
+        if not isinstance(market_analysis, dict):
+            market_analysis = {}
+            memo["market_analysis"] = market_analysis
+
+        market_stats = public_data.get("market_stats")
+        if isinstance(market_stats, dict) and market_stats:
+            industry = market_analysis.get("industry_size_and_growth")
+            if not isinstance(industry, dict):
+                industry = {}
+                market_analysis["industry_size_and_growth"] = industry
+
+            tam_section = industry.get("total_addressable_market")
+            if not isinstance(tam_section, dict):
+                tam_section = {"name": "Not available", "value": "Not available", "cagr": "Not available", "source": "Not available"}
+                industry["total_addressable_market"] = tam_section
+
+            sam_section = industry.get("serviceable_obtainable_market")
+            if not isinstance(sam_section, dict):
+                sam_section = {"name": "Not available", "value": "Not available", "cagr": "Not available", "source": "Not available"}
+                industry["serviceable_obtainable_market"] = sam_section
+
+            tam_value = market_stats.get("TAM") or market_stats.get("tam")
+            sam_value = market_stats.get("SAM") or market_stats.get("sam")
+            cagr_value = market_stats.get("CAGR") or market_stats.get("cagr")
+            trend_value = market_stats.get("key_trends") or market_stats.get("trends")
+
+            if isinstance(tam_value, dict):
+                for field in ("name", "value", "cagr", "source"):
+                    if field in tam_value:
+                        _assign_if_placeholder(tam_section, field, tam_value[field])
+            elif isinstance(tam_value, str) and tam_value.strip():
+                _assign_if_placeholder(tam_section, "value", tam_value.strip())
+                if self._is_placeholder(tam_section.get("name")):
+                    tam_section["name"] = f"{sector or 'Market'} TAM".strip()
+
+            if isinstance(sam_value, dict):
+                for field in ("name", "value", "cagr", "source", "projection"):
+                    if field in sam_value:
+                        _assign_if_placeholder(sam_section, field, sam_value[field])
+            elif isinstance(sam_value, str) and sam_value.strip():
+                _assign_if_placeholder(sam_section, "value", sam_value.strip())
+                if self._is_placeholder(sam_section.get("name")):
+                    sam_section["name"] = f"{sector or 'Market'} SOM".strip()
+
+            if isinstance(cagr_value, str) and cagr_value.strip():
+                _assign_if_placeholder(tam_section, "cagr", cagr_value.strip())
+                _assign_if_placeholder(sam_section, "cagr", cagr_value.strip())
+
+            if isinstance(trend_value, (list, tuple)):
+                opportunities = [str(item).strip() for item in trend_value if str(item).strip()]
+            elif isinstance(trend_value, str):
+                opportunities = [part.strip() for part in re.split(r"[•\-\n]+", trend_value) if part.strip()]
+            else:
+                opportunities = []
+
+            if opportunities and self._is_placeholder(market_analysis.get("sub_segment_opportunities")):
+                market_analysis["sub_segment_opportunities"] = opportunities
+
+        competitors = public_data.get("competitors")
+        if isinstance(competitors, list) and competitors:
+            competitor_details = []
+            for entry in competitors:
+                if isinstance(entry, dict):
+                    name = str(entry.get("name") or entry.get("company") or entry.get("title") or "").strip()
+                    commentary = str(entry.get("commentary") or entry.get("description") or "Not available").strip()
+                    business_model = str(entry.get("business_model") or entry.get("model") or "Not available").strip()
+                    funding = str(entry.get("funding") or entry.get("funding_stage") or "Not available").strip()
+                    margins = str(entry.get("margins") or entry.get("growth") or "Not available").strip()
+                else:
+                    name = str(entry).strip()
+                    commentary = "Identified via public web search"
+                    business_model = "Not available"
+                    funding = "Not available"
+                    margins = "Not available"
+                if not name:
+                    continue
+                competitor_details.append(
+                    {
+                        "name": name,
+                        "commentary": commentary or "Not available",
+                        "business_model": business_model or "Not available",
+                        "funding": funding or "Not available",
+                        "margins": margins or "Not available",
+                    }
+                )
+            if competitor_details and self._is_placeholder(market_analysis.get("competitor_details")):
+                market_analysis["competitor_details"] = competitor_details
+
+        news_items = public_data.get("news")
+        if isinstance(news_items, list) and news_items:
+            joined_news = "\n".join(str(item).strip() for item in news_items if str(item).strip())
+            if joined_news:
+                _assign_if_placeholder(market_analysis, "recent_news", joined_news)
+
+        financials = memo.get("financials", {})
+        if not isinstance(financials, dict):
+            financials = {}
+            memo["financials"] = financials
+
+        extracted_metrics = self._extract_financial_metrics(extracted_text)
+
+        srr_mrr = financials.get("srr_mrr")
+        if not isinstance(srr_mrr, dict):
+            srr_mrr = {"current_booked_arr": "Not available", "current_mrr": "Not available"}
+            financials["srr_mrr"] = srr_mrr
+
+        for key in ("current_booked_arr", "current_mrr"):
+            metric_value = extracted_metrics.get(key)
+            if isinstance(metric_value, str) and metric_value.strip():
+                _assign_if_placeholder(srr_mrr, key, metric_value.strip())
+
+        burn_and_runway = financials.get("burn_and_runway")
+        if not isinstance(burn_and_runway, dict):
+            burn_and_runway = {
+                "funding_ask": "Not available",
+                "stated_runway": "Not available",
+                "implied_net_burn": "Not available",
+            }
+            financials["burn_and_runway"] = burn_and_runway
+
+        for key in ("funding_ask", "stated_runway", "implied_net_burn"):
+            metric_value = extracted_metrics.get(key)
+            if isinstance(metric_value, str) and metric_value.strip():
+                _assign_if_placeholder(burn_and_runway, key, metric_value.strip())
+
+        for field in ("funding_history", "valuation_rationale"):
+            metric_value = extracted_metrics.get(field)
+            if isinstance(metric_value, str) and metric_value.strip():
+                _assign_if_placeholder(financials, field, metric_value.strip())
+
+        projections = extracted_metrics.get("projections")
+        if (
+            isinstance(projections, list)
+            and projections
+            and self._is_placeholder(financials.get("projections"))
+        ):
+            financials["projections"] = projections
+
+        if self._is_placeholder(financials.get("funding_history")):
+            public_funding = public_data.get("news") or []
+            if isinstance(public_funding, list):
+                funding_lines = [line for line in public_funding if any(keyword in line.lower() for keyword in ("funding", "raise", "investment"))]
+                if funding_lines:
+                    financials["funding_history"] = funding_lines[0]
+
+        business_model = memo.get("business_model", {})
+        if not isinstance(business_model, dict):
+            business_model = {}
+            memo["business_model"] = business_model
+
+        concise_pitch = extracted_text.get("pitch_deck", {}).get("concise") if isinstance(extracted_text, dict) else None
+        if isinstance(concise_pitch, str) and concise_pitch.strip():
+            for key in ("revenue_streams", "pricing", "scalability"):
+                if self._is_placeholder(business_model.get(key)):
+                    business_model[key] = concise_pitch.strip()
+
+        return memo
+
+    def _extract_financial_metrics(self, extracted_text: Dict[str, Any]) -> Dict[str, Any]:
+        metrics: Dict[str, Any] = {}
+        if not isinstance(extracted_text, dict):
+            return metrics
+
+        pitch_deck = extracted_text.get("pitch_deck")
+        if not isinstance(pitch_deck, dict):
+            return metrics
+
+        raw_pages = pitch_deck.get("raw")
+        if not isinstance(raw_pages, dict) or not raw_pages:
+            return metrics
+
+        page_lines: List[str] = []
+        for page_text in raw_pages.values():
+            if not isinstance(page_text, str):
+                continue
+            for line in page_text.splitlines():
+                clean_line = line.strip()
+                if clean_line:
+                    page_lines.append(clean_line)
+
+        joined_text = "\n".join(page_lines)
+
+        def _search_patterns(patterns: Sequence[str]) -> Optional[str]:
+            for pattern in patterns:
+                match = re.search(pattern, joined_text, flags=re.IGNORECASE)
+                if match:
+                    groups = [grp for grp in match.groups() if grp]
+                    if groups:
+                        return groups[0].strip()
+                    return match.group(0).strip()
+            return None
+
+        currency_pattern = r"([\$₹€£]?\s?\d[\d,\.]*\s?(?:k|m|b|mn|bn|million|billion|crore|crores|lakh|lakhs)?\s?(?:usd|inr|sgd|eur|cad|aud|gbp)?)"
+
+        metrics_map = {
+            "current_booked_arr": [rf"\barr\b[^\n]*{currency_pattern}", rf"annual recurring revenue[^\n]*{currency_pattern}"],
+            "current_mrr": [rf"\bmrr\b[^\n]*{currency_pattern}", rf"monthly recurring revenue[^\n]*{currency_pattern}"],
+            "funding_ask": [rf"(?:funding ask|raising|seeking)[^\n]*{currency_pattern}", rf"raise(?:s|d)?[^\n]*{currency_pattern}"],
+            "stated_runway": [r"runway[^\n]*(\d+\s*(?:months?|mos?|years?|yrs?))"],
+            "implied_net_burn": [rf"(?:burn rate|net burn)[^\n]*{currency_pattern}"],
+            "funding_history": [r"(?:raised|secured|closed)[^\n]+"],
+            "valuation_rationale": [r"valuation[^\n]+"],
+        }
+
+        for key, patterns in metrics_map.items():
+            value = _search_patterns(patterns)
+            if value:
+                metrics[key] = value
+
+        projections: List[Dict[str, str]] = []
+        seen_years: set[str] = set()
+        projection_pattern = re.compile(r"(20\d{2})[^\n]*" + currency_pattern, re.IGNORECASE)
+        for line in page_lines:
+            match = projection_pattern.search(line)
+            if not match:
+                continue
+            year = match.group(1)
+            revenue = match.group(2)
+            if not year or not revenue:
+                continue
+            if year in seen_years:
+                continue
+            seen_years.add(year)
+            projections.append({"year": year, "revenue": revenue.strip()})
+
+        if projections:
+            metrics["projections"] = projections
+
+        return metrics
