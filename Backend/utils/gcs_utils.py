@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import logging
 from typing import Tuple
-from io import BytesIO
 
 from fastapi import UploadFile
 from google.cloud import storage
@@ -11,7 +10,6 @@ from google.cloud import storage
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
-
 
 class GCSManager:
     def __init__(self):
@@ -24,7 +22,7 @@ class GCSManager:
             blob = self.bucket.blob(destination_path)
             content = await file.read()
             file_hash = hashlib.sha256(content).hexdigest()
-
+            
             # upload_from_string is synchronous
             blob.upload_from_string(content, content_type=file.content_type)
 
@@ -35,12 +33,18 @@ class GCSManager:
             logger.error(f"GCS upload error: {str(e)}")
             raise
 
-    def upload_blob_from_bytes(self, data: bytes, destination_blob_name: str, content_type: str = "application/pdf"):
-        """Uploads raw bytes to GCS."""
+    def upload_blob_from_bytes(
+        self,
+        data: bytes,
+        destination_blob_name: str,
+        content_type: str = "application/pdf",
+    ) -> str:
+        """Uploads raw bytes to GCS and returns the resulting ``gs://`` URI."""
         try:
             blob = self.bucket.blob(destination_blob_name)
             blob.upload_from_string(data, content_type=content_type)
             logger.info(f"Bytes uploaded to GCS: {destination_blob_name}")
+            return f"gs://{self.bucket.name}/{destination_blob_name}"
         except Exception as e:
             logger.error(f"GCS bytes upload error: {str(e)}")
             raise
@@ -78,7 +82,6 @@ class GCSManager:
         except Exception as e:
             logger.error(f"GCS download error: {str(e)}")
             raise
-
-
+    
 # Instantiate a single manager to be imported
 gcs_manager = GCSManager()

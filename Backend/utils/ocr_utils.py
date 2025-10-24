@@ -1,5 +1,6 @@
 import io
 import logging
+from typing import List, Sequence, Tuple
 from urllib.parse import urlparse
 from pypdf import PdfReader, PdfWriter
 from typing import Any, Dict
@@ -15,7 +16,18 @@ logger = logging.getLogger(__name__)
 
 PAGE_LIMIT = 15  # The hard quota for standard Document AI OCR
 
-def parse_gcs_uri(gcs_uri: str) -> (str, str):
+ChunkRange = Tuple[int, int]
+
+
+class DocumentAIProcessingError(RuntimeError):
+    """Raised when Document AI fails to return text for a given request."""
+
+
+class DocumentAIPageLimitError(DocumentAIProcessingError):
+    """Raised when Document AI rejects a request because of page limits."""
+
+
+def parse_gcs_uri(gcs_uri: str) -> Tuple[str, str]:
     """Parses a GCS URI into bucket and blob name."""
     parsed_uri = urlparse(gcs_uri)
     if parsed_uri.scheme != "gs":
