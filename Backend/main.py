@@ -27,7 +27,7 @@ from utils.docx_utils import MemoExporter
 from utils.firestore_utils import FirestoreManager
 from utils.gcs_utils import GCSManager
 from utils.naming import build_company_display_name
-from utils.ocr_utils import extract_text_from_pdf_docai
+from utils.ocr_utils import process_large_pdf
 from utils.search_utils import PublicDataGatherer
 from utils.summarizer import GeminiSummarizer
 from utils.chat_agent import StartupChatAgent
@@ -272,11 +272,13 @@ async def process_deal(deal_id: str, file_urls: dict, deck_hash: Optional[str] =
 
             # --- This is the NEW, FAST call. ---
             print("Starting fast Document AI extraction...")
-            full_text = extract_text_from_pdf_docai(
+            full_text = process_large_pdf(
                 gcs_uri=gcs_uri,
+                deal_id=deal_id,
                 project_id=DOCAI_PROJECT_ID,
                 location=DOCAI_LOCATION,
                 processor_id=DOCAI_PROCESSOR_ID,
+                bucket_name=settings.GCS_BUCKET_NAME,
             )
 
             if not full_text:
