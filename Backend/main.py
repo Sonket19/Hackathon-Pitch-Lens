@@ -27,7 +27,7 @@ from utils.docx_utils import MemoExporter
 from utils.firestore_utils import FirestoreManager
 from utils.gcs_utils import GCSManager
 from utils.naming import build_company_display_name
-from utils.ocr_utils import process_large_pdf
+from utils.ocr_utils import PDFProcessor
 from utils.search_utils import PublicDataGatherer
 from utils.summarizer import GeminiSummarizer
 from utils.chat_agent import StartupChatAgent
@@ -66,6 +66,7 @@ app.include_router(risk_router)
 # ---------- Initialize services ----------
 gcs_manager = GCSManager()
 gemini_summarizer = GeminiSummarizer()
+pdf_processor = PDFProcessor()
 data_gatherer = PublicDataGatherer()
 memo_exporter = MemoExporter()
 firestore_manager = FirestoreManager()
@@ -227,10 +228,13 @@ async def process_deal(deal_id: str, file_urls: dict, deck_hash: Optional[str] =
     """Background task to process deal materials"""
     try:
         print("process_deal called")
-        # TODO: Move these Document AI settings to environment variables
-        DOCAI_PROJECT_ID = "YOUR-GCP-PROJECT-ID-HERE"
-        DOCAI_LOCATION = "us"
-        DOCAI_PROCESSOR_ID = "YOUR-PROCESSOR-ID-HERE"
+        DOCAI_PROJECT_ID = settings.DOCAI_PROJECT_ID
+        DOCAI_LOCATION = settings.DOCAI_LOCATION
+        DOCAI_PROCESSOR_ID = settings.DOCAI_PROCESSOR_ID
+
+        if not DOCAI_PROJECT_ID or not DOCAI_PROCESSOR_ID:
+            logger.error("Document AI configuration missing. Check DOCAI environment variables.")
+            raise HTTPException(status_code=500, detail="Document AI configuration is incomplete.")
 
         await firestore_manager.update_deal(deal_id, {"metadata.status": "processing"})
         extracted_text: Dict[str, Any] = {}
@@ -266,48 +270,27 @@ async def process_deal(deal_id: str, file_urls: dict, deck_hash: Optional[str] =
             pdf_start = time.perf_counter()
             gcs_uri = file_urls['pitch_deck_url']
 
-            # --- This is the OLD, SLOW call. Commented out in favour of Document AI. ---
-            # print("Starting slow OCR extraction...")
-            # pdf_data = await pdf_processor.process_pdf(file_urls['pitch_deck_url'])
-
-            # --- This is the NEW, FAST call. ---
             print("Starting fast Document AI extraction...")
-            full_text = await process_large_pdf(
-                gcs_uri=gcs_uri,
-                deal_id=deal_id,
-                project_id=DOCAI_PROJECT_ID,
-                location=DOCAI_LOCATION,
-                processor_id=DOCAI_PROCESSOR_ID,
-                bucket_name=settings.GCS_BUCKET_NAME,
-            )
-
-            if not full_text:
-                print("Error: Document AI failed to extract text.")
-                raise HTTPException(status_code=500, detail="Failed to process document text.")
-
-            print("Starting summarization...")
-            summary_data = await gemini_summarizer.summarize_pitch_deck(
-                full_text,
-                media_inputs=[{"uri": gcs_uri, "mime_type": "application/pdf"}],
-            )
+            pdf_data = await pdf_processor.process_pdf(gcs_uri, deal_id)
             stage_timings['pdf_processing_s'] = time.perf_counter() - pdf_start
 
             summary_snapshot = {
-                "concise": summary_data.get("summary_res", ""),
-                "founder_response": summary_data.get("founder_response", []),
-                "sector_response": summary_data.get("sector_response", ""),
-                "company_name_response": summary_data.get("company_name_response", ""),
-                "product_name_response": summary_data.get("product_name_response", ""),
+                "concise": pdf_data.get("concise", ""),
+                "founder_response": pdf_data.get("founder_response", []),
+                "sector_response": pdf_data.get("sector_response", ""),
+                "company_name_response": pdf_data.get("company_name_response", ""),
+                "product_name_response": pdf_data.get("product_name_response", ""),
             }
             temp_res = summary_snapshot
+            raw_text = pdf_data.get("raw", "")
             extracted_text = {
                 "pitch_deck": {
-                    "raw": {"1": full_text},
+                    "raw": {"1": raw_text},
                     "concise": summary_snapshot["concise"],
-                    "logos": [],
+                    "logos": pdf_data.get("logos", []),
                 }
             }
-            logos_detected = []
+            logos_detected = pdf_data.get("logos", []) or []
 
         if not logos_detected:
             pitch_payload = extracted_text.get("pitch_deck", {}) if isinstance(extracted_text, dict) else {}

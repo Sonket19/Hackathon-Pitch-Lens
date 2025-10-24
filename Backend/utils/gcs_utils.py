@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import datetime
 import hashlib
 import logging
 from typing import Tuple
-from io import BytesIO
 
 from fastapi import UploadFile
 from google.cloud import storage
@@ -12,7 +10,6 @@ from google.cloud import storage
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
-
 
 class GCSManager:
     def __init__(self):
@@ -25,7 +22,7 @@ class GCSManager:
             blob = self.bucket.blob(destination_path)
             content = await file.read()
             file_hash = hashlib.sha256(content).hexdigest()
-
+            
             # upload_from_string is synchronous
             blob.upload_from_string(content, content_type=file.content_type)
 
@@ -79,7 +76,6 @@ class GCSManager:
         except Exception as e:
             logger.error(f"GCS download error: {str(e)}")
             raise
-
-
+    
 # Instantiate a single manager to be imported
 gcs_manager = GCSManager()
