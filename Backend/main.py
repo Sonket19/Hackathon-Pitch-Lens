@@ -227,10 +227,13 @@ async def process_deal(deal_id: str, file_urls: dict, deck_hash: Optional[str] =
     """Background task to process deal materials"""
     try:
         print("process_deal called")
-        # TODO: Move these Document AI settings to environment variables
-        DOCAI_PROJECT_ID = "YOUR-GCP-PROJECT-ID-HERE"
-        DOCAI_LOCATION = "us"
-        DOCAI_PROCESSOR_ID = "YOUR-PROCESSOR-ID-HERE"
+        DOCAI_PROJECT_ID = settings.DOCAI_PROJECT_ID
+        DOCAI_LOCATION = settings.DOCAI_LOCATION
+        DOCAI_PROCESSOR_ID = settings.DOCAI_PROCESSOR_ID
+
+        if not DOCAI_PROJECT_ID or not DOCAI_PROCESSOR_ID:
+            logger.error("Document AI configuration missing. Check DOCAI environment variables.")
+            raise HTTPException(status_code=500, detail="Document AI configuration is incomplete.")
 
         await firestore_manager.update_deal(deal_id, {"metadata.status": "processing"})
         extracted_text: Dict[str, Any] = {}
