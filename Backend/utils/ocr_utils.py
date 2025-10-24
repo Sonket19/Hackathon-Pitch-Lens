@@ -18,6 +18,14 @@ PAGE_LIMIT = 15  # The hard quota for standard Document AI OCR
 ChunkRange = Tuple[int, int]
 
 
+class DocumentAIProcessingError(RuntimeError):
+    """Raised when Document AI fails to return text for a given request."""
+
+
+class DocumentAIPageLimitError(DocumentAIProcessingError):
+    """Raised when Document AI rejects a request because of page limits."""
+
+
 def parse_gcs_uri(gcs_uri: str) -> Tuple[str, str]:
     """Parses a GCS URI into bucket and blob name."""
     parsed_uri = urlparse(gcs_uri)
@@ -82,15 +90,17 @@ def extract_text_from_pdf_docai(
         return document.text
     except Exception as exc:  # pragma: no cover - network/service failure path
         error_message = str(exc)
+
         if "PAGE_LIMIT_EXCEEDED" in error_message:
             logger.error(
                 "Document AI reported PAGE_LIMIT_EXCEEDED for chunk %s: %s",
                 gcs_uri,
                 error_message,
             )
-        else:
-            logger.error("Error in Document AI processing chunk %s: %s", gcs_uri, error_message)
-        return ""
+            raise DocumentAIPageLimitError(error_message) from exc
+
+        logger.error("Error in Document AI processing chunk %s: %s", gcs_uri, error_message)
+        raise DocumentAIProcessingError(error_message) from exc
     finally:  # pragma: no cover - exercised in integration
         if manage_client:
             try:
@@ -135,15 +145,6 @@ async def process_large_pdf(
         logger.warning("Document %s contains no pages.", gcs_uri)
         return ""
 
-    if total_pages <= PAGE_LIMIT:
-        logger.info("Document is under the %s-page limit. Processing directly.", PAGE_LIMIT)
-        return extract_text_from_pdf_docai(
-            gcs_uri=gcs_uri,
-            project_id=project_id,
-            location=location,
-            processor_id=processor_id,
-        )
-
     chunk_ranges: Sequence[ChunkRange] = calculate_page_chunks(total_pages)
     logger.info(
         "Splitting document into %s chunk(s) capped at %s pages each.",
@@ -151,13 +152,18 @@ async def process_large_pdf(
         PAGE_LIMIT,
     )
 
-    chunk_gcs_uris: List[str] = []
     temp_blob_names: List[str] = []
 
     docai_client: documentai.DocumentProcessorServiceClient | None = None
     processor_resource: str | None = None
 
     try:
+        client_options = {"api_endpoint": f"{location}-documentai.googleapis.com"}
+        docai_client = documentai.DocumentProcessorServiceClient(client_options=client_options)
+        processor_resource = docai_client.processor_path(project_id, location, processor_id)
+
+        extracted_chunks: List[str] = []
+
         for start_page, end_page in chunk_ranges:
             pdf_writer = PdfWriter()
             for page_index in range(start_page, end_page):
@@ -165,16 +171,15 @@ async def process_large_pdf(
 
             chunk_bytes_io = io.BytesIO()
             pdf_writer.write(chunk_bytes_io)
-            chunk_bytes_io.seek(0)
+            chunk_bytes = chunk_bytes_io.getvalue()
 
             chunk_blob_name = (
                 f"deals/{deal_id}/docai_chunks/{deal_id}_p{start_page + 1}-p{end_page}.pdf"
             )
             chunk_uri = gcs_manager.upload_blob_from_bytes(
-                data=chunk_bytes_io.getvalue(),
+                data=chunk_bytes,
                 destination_blob_name=chunk_blob_name,
             )
-            chunk_gcs_uris.append(chunk_uri)
             temp_blob_names.append(chunk_blob_name)
             logger.info(
                 "Uploaded chunk %s covering pages %s-%s (%s page(s)).",
@@ -184,21 +189,19 @@ async def process_large_pdf(
                 end_page - start_page,
             )
 
-        client_options = {"api_endpoint": f"{location}-documentai.googleapis.com"}
-        docai_client = documentai.DocumentProcessorServiceClient(client_options=client_options)
-        processor_resource = docai_client.processor_path(project_id, location, processor_id)
+            try:
+                text_chunk = extract_text_from_pdf_docai(
+                    gcs_uri=chunk_uri,
+                    project_id=project_id,
+                    location=location,
+                    processor_id=processor_id,
+                    client=docai_client,
+                    processor_resource=processor_resource,
+                )
+            except DocumentAIProcessingError as exc:
+                logger.error("Failed to process chunk %s: %s", chunk_uri, exc)
+                return ""
 
-        logger.info("Processing %s chunk(s) with Document AI...", len(chunk_gcs_uris))
-        extracted_chunks: List[str] = []
-        for chunk_uri in chunk_gcs_uris:
-            text_chunk = extract_text_from_pdf_docai(
-                gcs_uri=chunk_uri,
-                project_id=project_id,
-                location=location,
-                processor_id=processor_id,
-                client=docai_client,
-                processor_resource=processor_resource,
-            )
             if text_chunk:
                 extracted_chunks.append(text_chunk)
             else:

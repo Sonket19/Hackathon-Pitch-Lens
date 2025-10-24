@@ -1,4 +1,14 @@
-from utils.ocr_utils import PAGE_LIMIT, calculate_page_chunks
+from types import SimpleNamespace
+
+import pytest
+
+from utils.ocr_utils import (
+    PAGE_LIMIT,
+    DocumentAIPageLimitError,
+    DocumentAIProcessingError,
+    calculate_page_chunks,
+    extract_text_from_pdf_docai,
+)
 
 
 def test_calculate_page_chunks_for_empty_document():
@@ -46,3 +56,68 @@ def test_calculate_page_chunks_invalid_inputs():
         assert "page_limit" in str(exc)
     else:  # pragma: no cover - sanity guard
         raise AssertionError("calculate_page_chunks should reject non-positive limits")
+
+
+class _FakeDocAIClient:
+    def __init__(self, *, raise_page_limit: bool = False, message: str = "chunk text"):
+        self.calls = []
+        self.raise_page_limit = raise_page_limit
+        self.response_text = message
+        self._path = "projects/test/locations/us/processors/test"
+
+    def processor_path(self, project: str, location: str, processor: str) -> str:  # pragma: no cover - simple passthrough
+        return self._path
+
+    def process_document(self, request):
+        self.calls.append(request)
+        if self.raise_page_limit:
+            raise RuntimeError("PAGE_LIMIT_EXCEEDED: Document pages exceed limit")
+        return SimpleNamespace(document=SimpleNamespace(text=self.response_text))
+
+
+def test_extract_text_returns_text_on_success():
+    client = _FakeDocAIClient()
+
+    text = extract_text_from_pdf_docai(
+        gcs_uri="gs://bucket/sample.pdf",
+        project_id="p",
+        location="loc",
+        processor_id="proc",
+        client=client,
+        processor_resource=client.processor_path("p", "loc", "proc"),
+    )
+
+    assert text == "chunk text"
+    assert len(client.calls) == 1
+
+
+def test_extract_text_raises_for_page_limit():
+    client = _FakeDocAIClient(raise_page_limit=True)
+
+    with pytest.raises(DocumentAIPageLimitError):
+        extract_text_from_pdf_docai(
+            gcs_uri="gs://bucket/sample.pdf",
+            project_id="p",
+            location="loc",
+            processor_id="proc",
+            client=client,
+            processor_resource=client.processor_path("p", "loc", "proc"),
+        )
+
+
+def test_extract_text_raises_for_generic_failures():
+    class _AlwaysFailClient(_FakeDocAIClient):
+        def process_document(self, request):  # pragma: no cover - deterministic failure
+            raise RuntimeError("unexpected error")
+
+    client = _AlwaysFailClient()
+
+    with pytest.raises(DocumentAIProcessingError):
+        extract_text_from_pdf_docai(
+            gcs_uri="gs://bucket/sample.pdf",
+            project_id="p",
+            location="loc",
+            processor_id="proc",
+            client=client,
+            processor_resource=client.processor_path("p", "loc", "proc"),
+        )
