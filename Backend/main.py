@@ -272,7 +272,7 @@ async def process_deal(deal_id: str, file_urls: dict, deck_hash: Optional[str] =
 
             # --- This is the NEW, FAST call. ---
             print("Starting fast Document AI extraction...")
-            full_text = await process_large_pdf(
+            full_text = process_large_pdf(
                 gcs_uri=gcs_uri,
                 deal_id=deal_id,
                 project_id=DOCAI_PROJECT_ID,
