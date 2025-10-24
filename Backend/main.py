@@ -27,7 +27,7 @@ from utils.docx_utils import MemoExporter
 from utils.firestore_utils import FirestoreManager
 from utils.gcs_utils import GCSManager
 from utils.naming import build_company_display_name
-from utils.ocr_utils import extract_text_from_pdf_docai
+from utils import ocr_utils
 from utils.search_utils import PublicDataGatherer
 from utils.summarizer import GeminiSummarizer
 from utils.chat_agent import StartupChatAgent
@@ -227,11 +227,6 @@ async def process_deal(deal_id: str, file_urls: dict, deck_hash: Optional[str] =
     """Background task to process deal materials"""
     try:
         print("process_deal called")
-        # TODO: Move these Document AI settings to environment variables
-        DOCAI_PROJECT_ID = "YOUR-GCP-PROJECT-ID-HERE"
-        DOCAI_LOCATION = "us"
-        DOCAI_PROCESSOR_ID = "YOUR-PROCESSOR-ID-HERE"
-
         await firestore_manager.update_deal(deal_id, {"metadata.status": "processing"})
         extracted_text: Dict[str, Any] = {}
         temp_res: Dict[str, Any] = {}
@@ -272,11 +267,13 @@ async def process_deal(deal_id: str, file_urls: dict, deck_hash: Optional[str] =
 
             # --- This is the NEW, FAST call. ---
             print("Starting fast Document AI extraction...")
-            full_text = extract_text_from_pdf_docai(
+            full_text = await ocr_utils.process_large_pdf(
                 gcs_uri=gcs_uri,
-                project_id=DOCAI_PROJECT_ID,
-                location=DOCAI_LOCATION,
-                processor_id=DOCAI_PROCESSOR_ID,
+                deal_id=deal_id,
+                project_id=settings.DOCAI_PROJECT_ID,
+                location=settings.DOCAI_LOCATION,
+                processor_id=settings.DOCAI_PROCESSOR_ID,
+                bucket_name=settings.GCS_BUCKET_NAME,
             )
 
             if not full_text:
