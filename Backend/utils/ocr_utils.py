@@ -1,18 +1,34 @@
 # utils/ocr_utils.py
 
 from typing import Dict, List, Tuple
+import io
 import os
 import json
 import uuid
 import logging
 import time
+from urllib.parse import urlparse
 
 from google.cloud import vision
 from google.cloud import storage
 from google.cloud import documentai_v1 as documentai
+from pypdf import PdfReader, PdfWriter
 
 from config.settings import settings
 from utils.summarizer import GeminiSummarizer
+from . import gcs_utils
+
+PAGE_LIMIT = 15  # The hard quota for standard Document AI OCR
+
+
+def parse_gcs_uri(gcs_uri: str) -> tuple[str, str]:
+    """Parses a GCS URI into bucket and blob name."""
+    parsed_uri = urlparse(gcs_uri)
+    if parsed_uri.scheme != "gs":
+        raise ValueError(f"Invalid GCS URI: {gcs_uri}")
+    bucket_name = parsed_uri.netloc
+    blob_name = parsed_uri.path.lstrip('/')
+    return bucket_name, blob_name
 
 logger = logging.getLogger(__name__)
 
@@ -238,3 +254,97 @@ def extract_text_from_pdf_docai(
     except Exception as e:
         print(f"Error in Document AI processing: {e}")
         return ""  # Return empty string on failure
+
+
+async def process_large_pdf(
+    gcs_uri: str,
+    deal_id: str,
+    project_id: str,
+    location: str,
+    processor_id: str,
+    bucket_name: str,
+) -> str:
+    """Process large PDFs by splitting them into Document AI friendly chunks."""
+    print(f"Starting large PDF processing for {gcs_uri}")
+
+    try:
+        _, blob_name = parse_gcs_uri(gcs_uri)
+    except ValueError as e:
+        print(f"Error: {e}")
+        return ""
+
+    try:
+        file_bytes = gcs_utils.download_blob(bucket_name, blob_name)
+        pdf_reader = PdfReader(io.BytesIO(file_bytes))
+        total_pages = len(pdf_reader.pages)
+        print(f"Document has {total_pages} pages. Splitting into chunks of {PAGE_LIMIT}.")
+    except Exception as e:
+        print(f"Failed to download or read PDF from GCS: {e}")
+        return ""
+
+    if total_pages == 0:
+        return ""
+
+    if total_pages <= PAGE_LIMIT:
+        print("Document is under page limit. Processing directly.")
+        return extract_text_from_pdf_docai(
+            gcs_uri=gcs_uri,
+            project_id=project_id,
+            location=location,
+            processor_id=processor_id,
+        )
+
+    all_extracted_text: List[str] = []
+    chunk_gcs_uris: List[str] = []
+    temp_blob_names: List[str] = []
+
+    try:
+        for start_page in range(0, total_pages, PAGE_LIMIT):
+            end_page = min(start_page + PAGE_LIMIT, total_pages)
+            pdf_writer = PdfWriter()
+
+            for page_num in range(start_page, end_page):
+                pdf_writer.add_page(pdf_reader.pages[page_num])
+
+            chunk_bytes_io = io.BytesIO()
+            pdf_writer.write(chunk_bytes_io)
+            chunk_bytes_io.seek(0)
+            chunk_bytes = chunk_bytes_io.getvalue()
+
+            chunk_file_name = f"deals/{deal_id}/temp_chunk_p{start_page + 1}-p{end_page}.pdf"
+
+            gcs_utils.upload_blob_from_bytes(
+                bucket_name=bucket_name,
+                data=chunk_bytes,
+                destination_blob_name=chunk_file_name,
+            )
+
+            chunk_gcs_uri = f"gs://{bucket_name}/{chunk_file_name}"
+            chunk_gcs_uris.append(chunk_gcs_uri)
+            temp_blob_names.append(chunk_file_name)
+            print(f"Uploaded chunk {chunk_gcs_uri} ({end_page - start_page} pages)")
+
+        print("Processing chunks with Document AI...")
+        for chunk_uri in chunk_gcs_uris:
+            text_chunk = extract_text_from_pdf_docai(
+                gcs_uri=chunk_uri,
+                project_id=project_id,
+                location=location,
+                processor_id=processor_id,
+            )
+            if text_chunk:
+                all_extracted_text.append(text_chunk)
+            else:
+                print(f"Warning: Chunk {chunk_uri} returned no text.")
+
+        full_text = "\n\n".join(all_extracted_text)
+        print("All chunks processed and combined.")
+        return full_text
+
+    finally:
+        print(f"Cleaning up {len(temp_blob_names)} temporary chunks...")
+        for tmp_blob_name in temp_blob_names:
+            try:
+                gcs_utils.delete_blob(bucket_name, tmp_blob_name)
+            except Exception as e:
+                print(f"Warning: Failed to delete temp chunk {tmp_blob_name}: {e}")
