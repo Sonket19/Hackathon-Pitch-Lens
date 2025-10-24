@@ -10,6 +10,10 @@ class Settings(BaseSettings):
     GCP_LOCATION: str = "us-central1"
     GCS_BUCKET_NAME: str = os.environ.get("GCS_BUCKET_NAME")
 
+    DOCAI_PROJECT_ID: str | None = os.environ.get("DOCAI_PROJECT_ID")
+    DOCAI_LOCATION: str = os.environ.get("DOCAI_LOCATION", "us")
+    DOCAI_PROCESSOR_ID: str | None = os.environ.get("DOCAI_PROCESSOR_ID")
+
     # APIs
     GOOGLE_API_KEY: str
     GOOGLE_SEARCH_ENGINE_ID: str
