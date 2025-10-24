@@ -8,7 +8,7 @@ from typing import Any, Dict
 from google.cloud import documentai_v1 as documentai
 
 # Import our singleton GCSManager instance
-from .gcs_utils import gcs_manager
+from .gcs_utils import gcs_manager 
 from .summarizer import GeminiSummarizer
 from config.settings import settings
 
@@ -196,3 +196,7 @@ class PDFProcessor:
         
         logger.info(f"Summarization complete for deal {deal_id}.")
         return pdf_data
+
+# This is the old, broken function that was at the top-level
+# We are intentionally removing it to ensure it can't be called.
+# def extract_text_from_pdf_docai(...)
