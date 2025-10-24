@@ -24,7 +24,6 @@ import {
   Video,
   Mic,
   Type,
-  UserRound,
 } from 'lucide-react';
 import { Button } from './ui/button';
 import {
@@ -327,11 +326,6 @@ export default function AnalysisDashboard({ analysisData: initialAnalysisData, s
             </DialogContent>
           </Dialog>
 
-          <Button asChild variant="outline">
-            <Link href={`/startup/${startupId}/contact`} className="flex items-center">
-              <UserRound className="mr-2 h-4 w-4" /> Contact
-            </Link>
-          </Button>
         </div>
       </div>
 
