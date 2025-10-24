@@ -14,3 +14,4 @@ PyPDF2
 pydantic-settings
 python-dotenv
 numpy
+pypdf
