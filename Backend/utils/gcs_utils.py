@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import datetime
 import hashlib
 import logging
-from typing import Tuple
+from typing import Optional, Tuple
 
 from fastapi import UploadFile
 from google.cloud import storage
@@ -10,6 +11,44 @@ from google.cloud import storage
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
+
+_storage_client: Optional[storage.Client] = None
+
+
+def _get_storage_client() -> storage.Client:
+    global _storage_client
+    if _storage_client is None:
+        _storage_client = storage.Client(project=settings.GCP_PROJECT_ID)
+    return _storage_client
+
+
+def download_blob(bucket_name: str, blob_name: str) -> bytes:
+    """Download a blob from GCS and return its bytes."""
+    client = _get_storage_client()
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(blob_name)
+    return blob.download_as_bytes()
+
+
+def upload_blob_from_bytes(
+    bucket_name: str,
+    data: bytes,
+    destination_blob_name: str,
+    content_type: Optional[str] = None,
+) -> None:
+    """Upload raw bytes to a blob in GCS."""
+    client = _get_storage_client()
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(destination_blob_name)
+    blob.upload_from_string(data, content_type=content_type)
+
+
+def delete_blob(bucket_name: str, blob_name: str) -> None:
+    """Delete a blob from GCS if it exists."""
+    client = _get_storage_client()
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(blob_name)
+    blob.delete()
 
 class GCSManager:
     def __init__(self):
