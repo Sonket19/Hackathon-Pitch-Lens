@@ -33,12 +33,18 @@ class GCSManager:
             logger.error(f"GCS upload error: {str(e)}")
             raise
 
-    def upload_blob_from_bytes(self, data: bytes, destination_blob_name: str, content_type: str = "application/pdf"):
-        """Uploads raw bytes to GCS."""
+    def upload_blob_from_bytes(
+        self,
+        data: bytes,
+        destination_blob_name: str,
+        content_type: str = "application/pdf",
+    ) -> str:
+        """Uploads raw bytes to GCS and returns the resulting ``gs://`` URI."""
         try:
             blob = self.bucket.blob(destination_blob_name)
             blob.upload_from_string(data, content_type=content_type)
             logger.info(f"Bytes uploaded to GCS: {destination_blob_name}")
+            return f"gs://{self.bucket.name}/{destination_blob_name}"
         except Exception as e:
             logger.error(f"GCS bytes upload error: {str(e)}")
             raise
