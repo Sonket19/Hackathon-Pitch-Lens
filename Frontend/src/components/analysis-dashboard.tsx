@@ -276,6 +276,9 @@ export default function AnalysisDashboard({ analysisData: initialAnalysisData, s
         </Dialog>
 
         <div className="flex flex-wrap items-center gap-3">
+          <Button asChild variant="secondary">
+            <Link href={`/startup/${startupId}/contact`}>Contact</Link>
+          </Button>
           <Dialog open={isCustomizeDialogOpen} onOpenChange={setIsCustomizeDialogOpen}>
             <DialogTrigger asChild>
               <Button>
