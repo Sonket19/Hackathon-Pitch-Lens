@@ -281,7 +281,6 @@ async def process_deal(deal_id: str, file_urls: dict, deck_hash: Optional[str] =
                 project_id=DOCAI_PROJECT_ID,
                 location=DOCAI_LOCATION,
                 processor_id=DOCAI_PROCESSOR_ID,
-                bucket_name=settings.GCS_BUCKET_NAME,
             )
 
             if not full_text:
