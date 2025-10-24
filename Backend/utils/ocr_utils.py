@@ -9,6 +9,7 @@ import time
 
 from google.cloud import vision
 from google.cloud import storage
+from google.cloud import documentai_v1 as documentai
 
 from config.settings import settings
 from utils.summarizer import GeminiSummarizer
@@ -194,3 +195,46 @@ class PDFProcessor:
             logger.error(f"Vision API error: {str(e)}")
             # Return one empty string to keep callers safe
             return ([""], [])
+
+
+def extract_text_from_pdf_docai(
+    gcs_uri: str,
+    project_id: str,
+    location: str,
+    processor_id: str,
+    mime_type: str = "application/pdf"
+) -> str:
+    """
+    Processes a document using the Document AI API for fast, bulk OCR.
+    """
+    print(f"Starting Document AI processing for: {gcs_uri}")
+
+    # You must set the api_endpoint regional an options object
+    client_options = {"api_endpoint": f"{location}-documentai.googleapis.com"}
+    client = documentai.DocumentProcessorServiceClient(client_options=client_options)
+
+    # The full resource name of the processor
+    name = client.processor_path(project_id, location, processor_id)
+
+    # Load GCS URI
+    gcs_document = documentai.GcsDocument(
+        gcs_uri=gcs_uri, mime_type=mime_type
+    )
+
+    # Configure the request
+    request = documentai.ProcessRequest(
+        name=name,
+        gcs_document=gcs_document,
+        skip_human_review=True  # Important for hackathon speed
+    )
+
+    try:
+        # Make the API call
+        result = client.process_document(request=request)
+        document = result.document
+        print("Document AI processing complete.")
+        # document.text contains ALL extracted text
+        return document.text
+    except Exception as e:
+        print(f"Error in Document AI processing: {e}")
+        return ""  # Return empty string on failure

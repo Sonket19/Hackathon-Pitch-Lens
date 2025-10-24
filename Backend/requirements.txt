@@ -4,6 +4,7 @@ python-multipart
 aiofiles
 google-cloud-storage
 google-cloud-vision
+google-cloud-documentai
 google-cloud-speech
 google-cloud-firestore
 google-cloud-aiplatform
