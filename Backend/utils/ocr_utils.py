@@ -56,7 +56,7 @@ def extract_text_from_pdf_docai(
         logger.error(f"Error in Document AI processing chunk {gcs_uri}: {e}")
         return ""
 
-def process_large_pdf(
+async def process_large_pdf(
     gcs_uri: str,
     deal_id: str,
     project_id: str,
